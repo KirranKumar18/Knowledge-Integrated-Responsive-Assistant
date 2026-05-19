@@ -22,6 +22,7 @@ import os
 import sys
 import json
 import time
+import threading
 import subprocess
 import argparse
 import requests
@@ -33,7 +34,7 @@ CONFIG_FILE = os.path.expanduser("~/.kira_config.json")
 DEFAULT_SERVER = "http://localhost:8000"  # will be overridden with ngrok URL
 
 RECORDING_FILE = os.path.expanduser("~/kira_recording.m4a")  # .m4a = AAC in 3GP container, ffmpeg-compatible
-RECORDING_DURATION = 5  # seconds — how long to listen
+RECORDING_DURATION = 3  # seconds — how long to listen
 RECORDING_SAMPLE_RATE = 44100  # 44.1kHz — standard for AAC
 
 
@@ -57,22 +58,73 @@ def save_config(config: dict):
 # ---------------------------------------------------------------------------
 # Termux helpers — wrapping Termux:API commands
 # ---------------------------------------------------------------------------
-def termux_tts_speak(text: str):
-    """
-    Speak text aloud using Termux:API TTS engine.
-    This uses the Android system TTS (Google TTS usually).
-    """
+_tts_proc: subprocess.Popen | None = None  # tracks current TTS process so we can kill it
+
+
+def stop_tts():
+    """Immediately kill any ongoing TTS speech (called before recording)."""
+    global _tts_proc
+    if _tts_proc and _tts_proc.poll() is None:
+        _tts_proc.kill()  # Aggressive kill so it stops instantly
+    _tts_proc = None
+    
+    # Stop termux native player if it's playing
     try:
-        subprocess.run(
-            ["termux-tts-speak", text],
-            timeout=60,
-            check=True,
-        )
-    except FileNotFoundError:
-        print(f"[TTS fallback] {text}")
-        print("(Install termux-api package: pkg install termux-api)")
-    except subprocess.TimeoutExpired:
-        print("[TTS] Speech timed out")
+        subprocess.run(["termux-media-player", "stop"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+
+def termux_tts_speak(text: str, block: bool = False):
+    """
+    Speak text aloud using gTTS (Google's neural voice).
+    Requires: pip install gTTS && pkg install mpv
+    """
+    global _tts_proc
+
+    def _speak():
+        global _tts_proc
+
+        try:
+            from gtts import gTTS
+            tts = gTTS(text=text, lang='en', tld='com') # tld='com' for standard US, 'co.uk' for British etc
+            
+            # Save to a temporary file
+            audio_file = os.path.expanduser("~/kira_response.mp3")
+            tts.save(audio_file)
+            
+            # Try to play with SoX (play) to increase speed in real-time
+            # tempo 1.25 makes it 25% faster without changing pitch
+            try:
+                _tts_proc = subprocess.Popen(
+                    ["play", "-q", audio_file, "tempo", "2.5"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except FileNotFoundError:
+                # Fallback to normal speed if SoX isn't installed
+                _tts_proc = subprocess.Popen(
+                    ["termux-media-player", "play", audio_file],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            
+            _tts_proc = None
+            return
+
+        except Exception as e:
+            # Fallback if gTTS or mpv fails
+            print(f"\n[KIRA said] {text}")
+            print(f"  (TTS failed: {e})")
+            _tts_proc = None
+
+    if block:
+        _speak()
+    else:
+        t = threading.Thread(target=_speak, daemon=True)
+        t.start()
+
+
 
 
 def termux_record_audio(output_path: str, duration: int = RECORDING_DURATION):
@@ -80,6 +132,10 @@ def termux_record_audio(output_path: str, duration: int = RECORDING_DURATION):
     Record audio from the microphone using Termux:API.
     Records for `duration` seconds and saves to `output_path`.
     """
+    # Delete stale file first — prevents old recording from being sent if this one fails
+    if os.path.exists(output_path):
+        os.remove(output_path)
+
     print(f"\n🎙️  Listening for {duration} seconds...")
 
     try:
@@ -108,6 +164,7 @@ def termux_record_audio(output_path: str, duration: int = RECORDING_DURATION):
         )
 
         record_proc.wait(timeout=5)
+        time.sleep(0.8)  # give mic time to fully release before next recording
 
         if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
             size_kb = os.path.getsize(output_path) / 1024
@@ -266,6 +323,7 @@ def conversation_loop(server_url: str, text_mode: bool = False):
                 # Voice mode — the real deal
                 print("\n" + "-" * 30)
                 input("Press Enter to speak (or Ctrl+C to exit)...")
+                stop_tts()       # ← kill KIRA's speech so mic doesn't pick it up
                 termux_vibrate(150)  # haptic feedback: I'm listening
 
                 if not termux_record_audio(RECORDING_FILE):
