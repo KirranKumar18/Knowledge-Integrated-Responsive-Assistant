@@ -1,0 +1,5 @@
+# KIRA Client — Phone-side dependencies (Termux)
+# Install with: pip install -r requirements.txt
+# Keep this minimal — phone has only 4GB RAM
+
+requests==2.32.3

@@ -1,0 +1,62 @@
+---
+
+## Build Phases
+
+### Phase 1 — Voice Pipeline (current phase)
+Get the phone talking to the laptop end to end:
+- FastAPI server on laptop serving phi3:mini responses
+- Ngrok tunnel exposing it publicly
+- Termux client capturing voice and playing response
+- Basic back and forth working
+
+### Phase 2 — Connect the Brain
+- Proper conversation history (memory between turns)
+- Gemini permission gate
+- Offline mode switching
+
+### Phase 3 — Productivity Tools
+- Google Calendar API (reminders + schedule)
+- Productivity monitor background process
+
+### Phase 4 — Knowledge Tools
+- Brave Search for study materials
+- GitHub repo search
+
+### Phase 5 — Fine Tuning
+- Collect personal usage data from phases 1-4
+- Fine-tune phi3:mini using LoRA on Google Colab
+- Replace base model with fine-tuned version
+
+### Phase 6 — Polish
+- Custom voice profile
+- LED or visual feedback
+- Conversation memory across sessions
+
+---
+
+## Current Status
+- Ollama installed on laptop with phi3:mini downloaded and working
+- Termux installed on phone via F-Droid
+- Termux:API installed on phone
+- Project folder created in Antigravity IDE
+- Ready to write server.py — Phase 1 start
+
+---
+
+## Important Constraints
+- Do NOT use OpenAI API anywhere — Gemini is the only external AI allowed
+- Always ask user permission before calling Gemini
+- phi3:mini must handle all routine tasks locally
+- Keep phone-side code lightweight — 4GB RAM limit
+- All calendar events go through Google Calendar API only
+- GitHub search uses public API only (no token needed for basic use)
+- Brave Search API key will be provided when needed
+
+---
+
+## How to help
+You are helping build JARVIS from scratch, phase by phase.
+We are currently on Phase 1.
+Write clean, well-commented Python code.
+Always explain what each file does before writing it.
+When in doubt about a decision, ask before assuming.
