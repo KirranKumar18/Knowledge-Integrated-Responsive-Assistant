@@ -16,6 +16,8 @@ Usage:
   python client.py --server https://xxxx.ngrok.io  # specify server URL
 """
 
+from __future__ import annotations  # enables dict | None syntax on Python < 3.10
+
 import os
 import sys
 import json
@@ -30,9 +32,9 @@ import requests
 CONFIG_FILE = os.path.expanduser("~/.kira_config.json")
 DEFAULT_SERVER = "http://localhost:8000"  # will be overridden with ngrok URL
 
-RECORDING_FILE = os.path.expanduser("~/kira_recording.wav")
+RECORDING_FILE = os.path.expanduser("~/kira_recording.m4a")  # .m4a = AAC in 3GP container, ffmpeg-compatible
 RECORDING_DURATION = 5  # seconds — how long to listen
-RECORDING_SAMPLE_RATE = 16000  # 16kHz — good for speech recognition
+RECORDING_SAMPLE_RATE = 44100  # 44.1kHz — standard for AAC
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +89,7 @@ def termux_record_audio(output_path: str, duration: int = RECORDING_DURATION):
                 "termux-microphone-record",
                 "-f", output_path,
                 "-l", str(duration),
-                "-e", "amr_wb",   # good quality, small file
+                "-e", "aac",    # AAC encoder → proper .m4a/3GP file, ffmpeg-compatible
                 "-r", str(RECORDING_SAMPLE_RATE),
             ],
             stdout=subprocess.DEVNULL,
