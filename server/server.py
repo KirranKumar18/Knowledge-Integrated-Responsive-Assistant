@@ -30,7 +30,7 @@ from pydantic import BaseModel
 # ---------------------------------------------------------------------------
 OLLAMA_BASE_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "phi3:mini")
-WHISPER_MODEL_SIZE = os.getenv("WHISPER_MODEL", "base")  # tiny | base | small
+WHISPER_MODEL_SIZE = os.getenv("WHISPER_MODEL", "tiny")  # tiny = 2x faster than base, minimal accuracy loss
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -80,11 +80,13 @@ async def query_ollama(prompt: str, conversation_history: list[dict] | None = No
     messages.append({
         "role": "system",
         "content": (
-            "You are KIRA, a personal AI assistant. "
-            "You are helpful, concise, and conversational. "
-            "Keep responses short and natural — you're being spoken aloud. "
-            "Avoid bullet points and markdown formatting since your output "
-            "will be converted to speech. Speak like a smart friend, not a textbook."
+            "You are KIRA, a personal AI voice assistant. "
+            "Rules you must follow strictly:\n"
+            "1. Keep every reply to 1-2 sentences maximum. Never write paragraphs.\n"
+            "2. No bullet points, no lists, no markdown — plain spoken English only.\n"
+            "3. Be casual and friendly, like a smart friend texting you.\n"
+            "4. If asked how you are or small talk, reply in ONE short sentence.\n"
+            "5. Your output is spoken aloud — shorter is always better."
         ),
     })
 
@@ -99,6 +101,10 @@ async def query_ollama(prompt: str, conversation_history: list[dict] | None = No
         "model": OLLAMA_MODEL,
         "messages": messages,
         "stream": False,  # get the full response at once
+        "options": {
+            "num_predict": 80,   # hard cap: ~60 words max — keeps responses short and fast
+            "temperature": 0.7,
+        },
     }
 
     try:
