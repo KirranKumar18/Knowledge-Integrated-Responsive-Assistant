@@ -19,13 +19,12 @@ def free_port(port: int):
             if f":{port}" in line and "LISTENING" in line:
                 pid_to_kill = line.split()[-1]
                 break
-        
         if not pid_to_kill:
             # Fallback if LISTENING isn't found
             pid_to_kill = lines[0].split()[-1]
 
         # Kill the process
-        print(f"💀 Found stuck process (PID: {pid_to_kill}). Killing it...")
+        rint(f"💀 Found stuck process (PID: {pid_to_kill}). Killing it...")
         subprocess.run(f"taskkill /PID {pid_to_kill} /F", shell=True)
         print("✅ Port successfully freed!")
 

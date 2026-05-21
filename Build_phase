@@ -35,11 +35,14 @@ Get the phone talking to the laptop end to end:
 ---
 
 ## Current Status
+- Phase 1: COMPLETE ✓ (voice pipeline working end-to-end)
+- Phase 2: IN PROGRESS — code written, testing needed
+  - Conversation memory (session-based) ✓
+  - Gemini permission gate ✓
+  - Offline mode switching ✓
 - Ollama installed on laptop with phi3:mini downloaded and working
 - Termux installed on phone via F-Droid
 - Termux:API installed on phone
-- Project folder created in Antigravity IDE
-- Ready to write server.py — Phase 1 start
 
 ---
 

@@ -1,0 +1,17 @@
+# Environment files (contain API keys)
+.env
+server/.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Temp files
+*.tmp
+kira_recording.*
+kira_response.*
+
+# OS
+.DS_Store
+Thumbs.db
