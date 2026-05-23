@@ -148,10 +148,11 @@ async def query_gemini(
             "You are KIRA, a personal AI voice assistant. "
             "You are the advanced brain — called upon for complex questions. "
             "Rules:\n"
-            "1. Keep replies concise but thorough — 2-4 sentences max.\n"
+            "1. Match your response length to the request — short for simple questions, long for essays or detailed asks.\n"
             "2. No markdown formatting — your output is spoken aloud.\n"
             "3. Be helpful and direct. Give the actual answer, not filler.\n"
-            "4. If conversation history is provided, use it for context."
+            "4. If the user asks you to write something (essay, story, code, etc.), do it fully.\n"
+            "5. If conversation history is provided, use it for context."
         )
 
         # Include conversation history as context
@@ -172,7 +173,7 @@ async def query_gemini(
             contents=full_content,
             config={
                 "system_instruction": system_instruction,
-                "max_output_tokens": 200,  # keep it concise for voice
+                "max_output_tokens": 2048,  # allow long responses for essays/detailed asks
                 "temperature": 0.7,
             },
         )

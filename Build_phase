@@ -12,7 +12,7 @@ Get the phone talking to the laptop end to end:
 ### Phase 2 — Connect the Brain
 - Proper conversation history (memory between turns)
 - Gemini permission gate
-- Offline mode switching
+- Offline mode switching    #stopped for now
 
 ### Phase 3 — Productivity Tools
 - Google Calendar API (reminders + schedule)

@@ -40,7 +40,7 @@ if _env_path.exists():
                 os.environ.setdefault(_key.strip(), _val.strip())
 
 import httpx
-import whisper
+from faster_whisper import WhisperModel
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -52,7 +52,7 @@ from gemini_handler import needs_gemini, query_gemini, is_gemini_available
 # ---------------------------------------------------------------------------
 OLLAMA_BASE_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "phi3:mini")
-WHISPER_MODEL_SIZE = os.getenv("WHISPER_MODEL", "tiny")  # tiny = 2x faster than base, minimal accuracy loss
+WHISPER_MODEL_SIZE = os.getenv("WHISPER_MODEL", "large-v3-turbo")  # large-v3-turbo = best accuracy/speed ratio
 
 # Phase 2: Session settings
 MAX_HISTORY_MESSAGES = 10  # keep last 10 messages (5 user + 5 assistant) per session
@@ -86,9 +86,21 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 # Load Whisper model at startup (one-time, cached in memory)
 # ---------------------------------------------------------------------------
-log.info(f"Loading Whisper model '{WHISPER_MODEL_SIZE}' ...")
-whisper_model = whisper.load_model(WHISPER_MODEL_SIZE)
-log.info("Whisper model loaded ✓")
+log.info(f"Loading faster-whisper model '{WHISPER_MODEL_SIZE}' ...")
+try:
+    whisper_model = WhisperModel(
+        WHISPER_MODEL_SIZE,
+        device="cpu",             # CPU mode — works on all systems
+        compute_type="int8",      # quantized for speed + lower memory
+    )
+except Exception as e:
+    log.warning(f"int8 failed ({e}), trying float32...")
+    whisper_model = WhisperModel(
+        WHISPER_MODEL_SIZE,
+        device="cpu",
+        compute_type="float32",
+    )
+log.info("faster-whisper model loaded ✓")
 
 # ---------------------------------------------------------------------------
 # Phase 2: Session-based conversation memory
@@ -190,13 +202,22 @@ async def query_ollama(prompt: str, conversation_history: list[dict] | None = No
 # ---------------------------------------------------------------------------
 def transcribe_audio(audio_path: str) -> str:
     """
-    Transcribe audio file using local Whisper model.
-    Supports WAV, MP3, M4A, FLAC, OGG, and more.
+    Transcribe audio file using faster-whisper (CTranslate2 backend).
+    Optimized for low-latency voice assistant use (short utterances).
     """
     log.info(f"Transcribing: {audio_path}")
-    result = whisper_model.transcribe(audio_path, fp16=False)
-    text = result["text"].strip()
-    log.info(f"Transcribed: '{text}'")
+    segments, info = whisper_model.transcribe(
+        audio_path,
+        language="en",                      # skip language detection (~7s saved)
+        beam_size=1,                        # greedy decoding — fastest for short audio
+        vad_filter=True,                    # Silero VAD — skips silence
+        vad_parameters=dict(
+            min_silence_duration_ms=500,
+        ),
+        condition_on_previous_text=False,   # prevents context buildup slowdown
+    )
+    text = " ".join(seg.text.strip() for seg in segments).strip()
+    log.info(f"Transcribed ({info.language}, {info.language_probability:.0%}): '{text}'")
     return text
 
 

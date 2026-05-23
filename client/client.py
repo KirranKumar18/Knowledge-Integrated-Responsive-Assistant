@@ -125,6 +125,7 @@ def termux_tts_speak(text: str, block: bool = False):
                     stderr=subprocess.DEVNULL,
                 )
             
+            _tts_proc.wait()  # wait for audio playback to finish
             _tts_proc = None
             return
 
@@ -387,7 +388,7 @@ def handle_gemini_permission(
         print("\n🎙️  Say 'yes' or 'no'...")
         termux_vibrate(100)
 
-        if not termux_record_audio(RECORDING_FILE, duration=2):
+        if not termux_record_audio(RECORDING_FILE, duration=5):
             print("   Didn't catch that — sticking with the original answer.")
             return None
 

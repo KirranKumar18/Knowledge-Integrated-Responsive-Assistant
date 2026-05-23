@@ -24,7 +24,7 @@ def free_port(port: int):
             pid_to_kill = lines[0].split()[-1]
 
         # Kill the process
-        rint(f"💀 Found stuck process (PID: {pid_to_kill}). Killing it...")
+        print(f"💀 Found stuck process (PID: {pid_to_kill}). Killing it...")
         subprocess.run(f"taskkill /PID {pid_to_kill} /F", shell=True)
         print("✅ Port successfully freed!")
 
