@@ -14,7 +14,8 @@ Get the phone talking to the laptop end to end:
 - Gemini permission gate
 - Offline mode switching    #stopped for now
 
-### Phase 3 — Productivity Tools
+### Phase 3 — Productivity Tools    
+### SHOULD ADD CLIENT.PY AND DO TEST RUNS
 - Google Calendar API (reminders + schedule)
 - Productivity monitor background process
 

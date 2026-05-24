@@ -46,6 +46,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from gemini_handler import needs_gemini, query_gemini, is_gemini_available
+from productivity_monitor import monitor
+from calendar_handler import get_schedule, add_reminder
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -70,10 +72,19 @@ log = logging.getLogger("kira-server")
 # ---------------------------------------------------------------------------
 # App setup
 # ---------------------------------------------------------------------------
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    monitor.start()
+    yield
+    monitor.stop()
+
 app = FastAPI(
     title="KIRA Server",
-    description="Phase 2 — Voice pipeline with memory and Gemini fallback",
-    version="0.2.0",
+    description="Phase 3 — Voice pipeline, Gemini fallback, and Productivity tracking",
+    version="0.3.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -247,6 +258,23 @@ class KiraResponse(BaseModel):
     gemini_suggested: bool = False          # Phase 2: True if Gemini fallback is recommended
 
 
+def check_calendar_commands(user_message: str) -> str | None:
+    """Naive intent matcher for Phase 3 Calendar integration."""
+    msg = user_message.lower()
+    if any(phrase in msg for phrase in ["my schedule", "what's on my calendar", "what is on my calendar", "upcoming events"]):
+        return get_schedule()
+    
+    if "remind me to" in msg or "add to my calendar" in msg:
+        # Simple string extraction for the event name
+        if "remind me to" in msg:
+            summary = user_message.lower().split("remind me to")[-1].strip().capitalize()
+        else:
+            summary = "New KIRA Reminder"
+        return add_reminder(summary, hours_from_now=1)
+        
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -288,12 +316,18 @@ async def chat_text(req: ChatRequest):
     # Get conversation history for this session
     history = get_session_history(req.session_id)
 
-    # Query phi3:mini with history context
-    response_text = await query_ollama(req.message, conversation_history=history)
-    log.info(f"[/chat] Response: '{response_text[:80]}...'")
+    # Phase 3: Check calendar commands first
+    cal_response = check_calendar_commands(req.message)
+    if cal_response:
+        response_text = cal_response
+        log.info(f"[/chat] Calendar Intercept: '{response_text}'")
+    else:
+        # Query phi3:mini with history context
+        response_text = await query_ollama(req.message, conversation_history=history)
+        log.info(f"[/chat] Response: '{response_text[:80]}...'")
 
     # Phase 2: Check if Gemini should be suggested
-    suggest_gemini = needs_gemini(response_text)
+    suggest_gemini = needs_gemini(response_text) if not cal_response else False
 
     # Save this exchange to session history
     update_session(req.session_id, req.message, response_text)
@@ -343,12 +377,18 @@ async def voice_chat(
         # Step 2: Get conversation history for context
         history = get_session_history(session_id)
 
-        # Step 3: Get AI response from phi3:mini with history
-        response_text = await query_ollama(transcription, conversation_history=history)
-        log.info(f"[/voice] Response: '{response_text[:80]}...'")
+        # Phase 3: Check calendar commands first
+        cal_response = check_calendar_commands(transcription)
+        if cal_response:
+            response_text = cal_response
+            log.info(f"[/voice] Calendar Intercept: '{response_text}'")
+        else:
+            # Step 3: Get AI response from phi3:mini with history
+            response_text = await query_ollama(transcription, conversation_history=history)
+            log.info(f"[/voice] Response: '{response_text[:80]}...'")
 
         # Step 4: Check if Gemini should be suggested
-        suggest_gemini = needs_gemini(response_text)
+        suggest_gemini = needs_gemini(response_text) if not cal_response else False
 
         # Step 5: Save this exchange to session history
         update_session(session_id, transcription, response_text)
