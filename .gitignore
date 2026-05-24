@@ -1,6 +1,7 @@
 # Environment files (contain API keys)
 .env
 server/.env
+server/credentials.json
 
 # Python
 __pycache__/
