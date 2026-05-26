@@ -30,7 +30,7 @@ from typing import Optional
 # ---------------------------------------------------------------------------
 # Load .env file — so API keys persist without manual env var setup
 # ---------------------------------------------------------------------------
-_env_path = Path(__file__).parent / ".env"
+_env_path = Path(__file__).parent / "config" / ".env"
 if _env_path.exists():
     with open(_env_path) as _f:
         for _line in _f:
@@ -45,9 +45,10 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from gemini_handler import needs_gemini, query_gemini, is_gemini_available
-from productivity_monitor import monitor
-from calendar_handler import get_schedule, add_reminder
+from handlers.gemini_handler import needs_gemini, query_gemini, is_gemini_available
+from handlers.calendar_handler import get_schedule, add_reminder
+from handlers.task_reminder import add_task, get_pending_reminders, mark_done, list_tasks, get_task_count
+from services.productivity_monitor import monitor
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -264,15 +265,67 @@ def check_calendar_commands(user_message: str) -> str | None:
     if any(phrase in msg for phrase in ["my schedule", "what's on my calendar", "what is on my calendar", "upcoming events"]):
         return get_schedule()
     
-    if "remind me to" in msg or "add to my calendar" in msg:
-        # Simple string extraction for the event name
-        if "remind me to" in msg:
-            summary = user_message.lower().split("remind me to")[-1].strip().capitalize()
-        else:
-            summary = "New KIRA Reminder"
+    if "add to my calendar" in msg:
+        summary = "New KIRA Reminder"
         return add_reminder(summary, hours_from_now=1)
         
     return None
+
+
+def check_task_commands(user_message: str, session_id: str | None) -> str | None:
+    """
+    Phase 3: Detect task-related intents.
+    - Add task:  "I need to...", "I have to...", "remind me to...", "today I should..."
+    - Mark done: "I'm done with...", "mark ... as done", "finished ...", "completed ..."
+    - List:      "what are my tasks", "my pending tasks", "my tasks"
+    """
+    if not session_id:
+        return None
+
+    msg = user_message.lower().strip()
+
+    # ── List tasks ──
+    if any(phrase in msg for phrase in ["what are my tasks", "my pending tasks", "my tasks", "list my tasks", "show my tasks"]):
+        return list_tasks(session_id)
+
+    # ── Mark done ──
+    done_prefixes = ["i'm done with ", "im done with ", "i am done with ",
+                     "mark ", "finished ", "completed ", "done with "]
+    for prefix in done_prefixes:
+        if msg.startswith(prefix):
+            keyword = msg.replace(prefix, "").replace(" as done", "").strip()
+            if keyword:
+                return mark_done(session_id, keyword)
+
+    # ── Add task ──
+    task_prefixes = ["i need to ", "i have to ", "remind me to ",
+                     "today i should ", "i should ", "i must ",
+                     "i gotta ", "don't let me forget to ",
+                     "dont let me forget to ", "my task is "]
+    for prefix in task_prefixes:
+        if msg.startswith(prefix):
+            summary = user_message[len(prefix):].strip().capitalize()
+            if summary:
+                return add_task(session_id, summary)
+
+    return None
+
+
+def prepend_reminders(response_text: str, session_id: str | None) -> str:
+    """
+    Check for pending hourly reminders and prepend them to the response.
+    This way KIRA naturally speaks the reminders before answering.
+    """
+    if not session_id:
+        return response_text
+
+    reminders = get_pending_reminders(session_id)
+    if not reminders:
+        return response_text
+
+    reminder_block = " ".join(reminders)
+    log.info(f"[Tasks] Injecting {len(reminders)} reminder(s) for session {session_id[:8]}...")
+    return f"{reminder_block} Anyway, {response_text}"
 
 
 # ---------------------------------------------------------------------------
@@ -316,18 +369,24 @@ async def chat_text(req: ChatRequest):
     # Get conversation history for this session
     history = get_session_history(req.session_id)
 
-    # Phase 3: Check calendar commands first
-    cal_response = check_calendar_commands(req.message)
-    if cal_response:
-        response_text = cal_response
-        log.info(f"[/chat] Calendar Intercept: '{response_text}'")
+    # Phase 3: Check task commands first, then calendar, then normal AI
+    task_response = check_task_commands(req.message, req.session_id)
+    cal_response = check_calendar_commands(req.message) if not task_response else None
+    intercepted = task_response or cal_response
+
+    if intercepted:
+        response_text = intercepted
+        log.info(f"[/chat] Command Intercept: '{response_text}'")
     else:
         # Query phi3:mini with history context
         response_text = await query_ollama(req.message, conversation_history=history)
         log.info(f"[/chat] Response: '{response_text[:80]}...'")
 
+    # Phase 3: Prepend any pending hourly reminders
+    response_text = prepend_reminders(response_text, req.session_id)
+
     # Phase 2: Check if Gemini should be suggested
-    suggest_gemini = needs_gemini(response_text) if not cal_response else False
+    suggest_gemini = needs_gemini(response_text) if not intercepted else False
 
     # Save this exchange to session history
     update_session(req.session_id, req.message, response_text)
@@ -377,18 +436,24 @@ async def voice_chat(
         # Step 2: Get conversation history for context
         history = get_session_history(session_id)
 
-        # Phase 3: Check calendar commands first
-        cal_response = check_calendar_commands(transcription)
-        if cal_response:
-            response_text = cal_response
-            log.info(f"[/voice] Calendar Intercept: '{response_text}'")
+        # Phase 3: Check task commands first, then calendar, then normal AI
+        task_response = check_task_commands(transcription, session_id)
+        cal_response = check_calendar_commands(transcription) if not task_response else None
+        intercepted = task_response or cal_response
+
+        if intercepted:
+            response_text = intercepted
+            log.info(f"[/voice] Command Intercept: '{response_text}'")
         else:
             # Step 3: Get AI response from phi3:mini with history
             response_text = await query_ollama(transcription, conversation_history=history)
             log.info(f"[/voice] Response: '{response_text[:80]}...'")
 
+        # Phase 3: Prepend any pending hourly reminders
+        response_text = prepend_reminders(response_text, session_id)
+
         # Step 4: Check if Gemini should be suggested
-        suggest_gemini = needs_gemini(response_text) if not cal_response else False
+        suggest_gemini = needs_gemini(response_text) if not intercepted else False
 
         # Step 5: Save this exchange to session history
         update_session(session_id, transcription, response_text)
@@ -483,6 +548,27 @@ async def delete_session(session_id: str):
         return {"status": "deleted", "session_id": session_id}
     else:
         raise HTTPException(status_code=404, detail="Session not found")
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Task management endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/tasks/{session_id}")
+async def get_tasks(session_id: str):
+    """List all active hourly-reminder tasks for a session."""
+    return {
+        "session_id": session_id,
+        "task_count": get_task_count(session_id),
+        "tasks": list_tasks(session_id),
+    }
+
+
+@app.delete("/tasks/{session_id}/{keyword}")
+async def delete_task(session_id: str, keyword: str):
+    """Manually mark a task as done by keyword."""
+    result = mark_done(session_id, keyword)
+    return {"session_id": session_id, "result": result}
 
 
 # ---------------------------------------------------------------------------

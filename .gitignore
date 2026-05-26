@@ -1,7 +1,9 @@
 # Environment files (contain API keys)
-.env
-server/.env
-server/credentials.json
+server/config/.env
+
+# Google OAuth secrets
+server/config/credentials.json
+server/config/token.json
 
 # Python
 __pycache__/

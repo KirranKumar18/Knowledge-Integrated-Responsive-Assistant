@@ -102,9 +102,11 @@ def main():
     print("\n   Press Ctrl+C to stop\n")
 
     try:
+        import os
+        server_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         subprocess.run(
             [sys.executable, "-m", "uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"],
-            cwd=__import__("os").path.dirname(__import__("os").path.abspath(__file__)),
+            cwd=server_dir,
         )
     except KeyboardInterrupt:
         print("\n\n🛑 Shutting down...")

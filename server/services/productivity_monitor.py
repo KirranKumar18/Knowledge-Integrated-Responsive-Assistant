@@ -15,6 +15,10 @@ except ImportError:
 
 log = logging.getLogger("kira-server.productivity")
 
+# ANSI color codes for terminal output
+YELLOW = "\033[93m"
+RESET = "\033[0m"
+
 # Keywords that indicate a distracting window
 DISTRACTING_KEYWORDS = ["YouTube", "Twitter", "X", "Instagram", "Reddit", "Facebook", "Netflix"]
 
@@ -48,7 +52,7 @@ class ProductivityMonitor:
 
         if is_distracted:
             self.current_distraction_time += elapsed
-            log.info(f"[Monitor] Distraction detected: '{title}'. Total time: {int(self.current_distraction_time)}s")
+            log.info(f"{YELLOW}[Monitor]{RESET} Distraction detected: '{title}'. Total time: {int(self.current_distraction_time)}s")
             
             if self.current_distraction_time >= DISTRACTION_THRESHOLD:
                 self._trigger_intervention(title)
@@ -64,7 +68,7 @@ class ProductivityMonitor:
 
     def _trigger_intervention(self, title: str):
         """Called when distraction threshold is reached."""
-        log.warning(f"🚨 PRODUCTIVITY ALERT: You have been distracted by '{title}' for too long!")
+        log.warning(f"{YELLOW}[Monitor] 🚨 PRODUCTIVITY ALERT:{RESET} You have been distracted by '{title}' for too long!")
         # TODO: Integrate with KIRA's voice to actually speak to the user
 
     def _monitor_loop(self):
@@ -82,7 +86,7 @@ class ProductivityMonitor:
         self.is_running = True
         self._thread = threading.Thread(target=self._monitor_loop, daemon=True)
         self._thread.start()
-        log.info("Productivity monitor started in the background.")
+        log.info(f"{YELLOW}[Monitor]{RESET} Productivity monitor started in the background.")
 
     def stop(self):
         self.is_running = False

@@ -16,7 +16,7 @@ Get the phone talking to the laptop end to end:
 
 ### Phase 3 — Productivity Tools    
 ### SHOULD ADD CLIENT.PY AND DO TEST RUNS
-- Google Calendar API (reminders + schedule)
+- Google Calendar API (reminders + schedule)  and when i say a task for the day kira should remain me every 1hr until its done
 - Productivity monitor background process
 
 ### Phase 4 — Knowledge Tools

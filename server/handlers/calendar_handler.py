@@ -18,9 +18,9 @@ log = logging.getLogger("kira-server.calendar")
 # We request full access to read and write events
 SCOPES = ['https://www.googleapis.com/auth/calendar']
 
-_base_dir = Path(__file__).parent
-CREDENTIALS_FILE = _base_dir / "credentials.json"
-TOKEN_FILE = _base_dir / "token.json"
+_config_dir = Path(__file__).parent.parent / "config"
+CREDENTIALS_FILE = _config_dir / "credentials.json"
+TOKEN_FILE = _config_dir / "token.json"
 
 def get_calendar_service():
     """Authenticates the user and returns the Google Calendar API service."""

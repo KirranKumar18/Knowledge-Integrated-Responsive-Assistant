@@ -46,7 +46,7 @@ CONFIG_FILE = os.path.expanduser("~/.kira_config.json")
 DEFAULT_SERVER = "http://localhost:8000"  # will be overridden with ngrok URL
 
 RECORDING_FILE = os.path.expanduser("~/kira_recording.m4a")  # .m4a = AAC in 3GP container, ffmpeg-compatible
-RECORDING_DURATION = 3  # seconds — how long to listen
+RECORDING_DURATION = 5  # seconds — how long to listen
 RECORDING_SAMPLE_RATE = 44100  # 44.1kHz — standard for AAC
 
 # Phase 2: Connectivity check settings
