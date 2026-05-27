@@ -23,6 +23,8 @@ Requirements: FastAPI, uvicorn, whisper, httpx, python-multipart, google-genai
 import os
 import tempfile
 import logging
+import re
+import json
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -58,7 +60,7 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "phi3:mini")
 WHISPER_MODEL_SIZE = os.getenv("WHISPER_MODEL", "large-v3-turbo")  # large-v3-turbo = best accuracy/speed ratio
 
 # Phase 2: Session settings
-MAX_HISTORY_MESSAGES = 10  # keep last 10 messages (5 user + 5 assistant) per session
+MAX_HISTORY_MESSAGES = 4  # 2 user + 2 assistant turns — keeps phi3:mini's 4K context window safe
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -161,10 +163,41 @@ async def query_ollama(prompt: str, conversation_history: list[dict] | None = No
     """
     messages = []
 
-    # System prompt — gives KIRA its personality
-    messages.append({
-        "role": "system",
-        "content": (
+    # If conversation_history is None, we are running the first pass (Intent/Tool detection)
+    # where we want phi3:mini to follow strict tool-calling formatting without being biased by conversational history.
+    if conversation_history is None:
+        # Phase 1: Tool-calling system prompt
+        system_content = (
+            "You are KIRA, a personal AI voice assistant.\n\n"
+            "You have access to these tools. When the user's request needs one, "
+            "respond ONLY with the TOOL and ARGS block, and nothing else (no comments, notes, or extra text).\n"
+            "Important: Keep task summaries and event names specific and exact. Do not generalize them (e.g., do not change 'buy milk' to 'Buy milk').\n\n"
+            "TOOL: add_reminder\n"
+            "ARGS: {\"summary\": \"event name\", \"time\": \"HH:MM\", \"duration_minutes\": 60}\n\n"
+            "TOOL: get_schedule\n"
+            "ARGS: {}\n\n"
+            "TOOL: add_task\n"
+            "ARGS: {\"summary\": \"task name\"}\n\n"
+            "TOOL: mark_done\n"
+            "ARGS: {\"keyword\": \"task name\"}\n\n"
+            "TOOL: list_tasks\n"
+            "ARGS: {}\n\n"
+            "If no tool is needed, respond normally in plain conversational text.\n"
+            "Rules for normal responses:\n"
+            "1. Keep every reply to 1-2 sentences maximum. Never write paragraphs.\n"
+            "2. No bullet points, no lists, no markdown — plain spoken English only.\n"
+            "3. Be casual and friendly. No fillers.\n\n"
+            "Examples:\n"
+            "- \"remind me about standup tomorrow at 9\" -> TOOL: add_reminder\nARGS: {\"summary\": \"Standup\", \"time\": \"09:00\", \"duration_minutes\": 60}\n"
+            "- \"what's on my calendar\" -> TOOL: get_schedule\nARGS: {}\n"
+            "- \"I need to buy milk\" -> TOOL: add_task\nARGS: {\"summary\": \"Buy milk\"}\n"
+            "- \"finished buying milk\" -> TOOL: mark_done\nARGS: {\"keyword\": \"buy milk\"}\n"
+            "- \"what are my tasks\" -> TOOL: list_tasks\nARGS: {}\n"
+            "- \"what is python\" -> Python is a high-level programming language."
+        )
+    else:
+        # Phase 2: Simple conversational-only system prompt (no tools)
+        system_content = (
             "You are KIRA, a personal AI voice assistant. "
             "Rules you must follow strictly:\n"
             "1. Keep every reply to 1-2 sentences maximum. Never write paragraphs.\n"
@@ -172,12 +205,17 @@ async def query_ollama(prompt: str, conversation_history: list[dict] | None = No
             "3. Be casual and friendly, like a smart friend texting you.\n"
             "4. If asked how you are or small talk, reply in ONE short sentence.\n"
             "5. Your output is spoken aloud — shorter is always better."
-        ),
+        )
+
+    messages.append({
+        "role": "system",
+        "content": system_content,
     })
 
     # Append conversation history from session (Phase 2)
+    # Only use the last 4 messages to avoid flooding phi3:mini's tiny 4K context window
     if conversation_history:
-        messages.extend(conversation_history)
+        messages.extend(conversation_history[-4:])
 
     # Append the current user message
     messages.append({"role": "user", "content": prompt})
@@ -187,8 +225,8 @@ async def query_ollama(prompt: str, conversation_history: list[dict] | None = No
         "messages": messages,
         "stream": False,  # get the full response at once
         "options": {
-            "num_predict": 80,   # hard cap: ~60 words max — keeps responses short and fast
-            "temperature": 0.7,
+            "num_predict": 100,  # ~80 words max — enough to output JSON ARGS cleanly
+            "temperature": 0.0 if conversation_history is None else 0.7,
         },
     }
 
@@ -259,55 +297,170 @@ class KiraResponse(BaseModel):
     gemini_suggested: bool = False          # Phase 2: True if Gemini fallback is recommended
 
 
-def check_calendar_commands(user_message: str) -> str | None:
-    """Naive intent matcher for Phase 3 Calendar integration."""
-    msg = user_message.lower()
-    if any(phrase in msg for phrase in ["my schedule", "what's on my calendar", "what is on my calendar", "upcoming events"]):
-        return get_schedule()
-    
-    if "add to my calendar" in msg:
-        summary = "New KIRA Reminder"
-        return add_reminder(summary, hours_from_now=1)
-        
-    return None
+def _parse_schedule_datetime(msg: str) -> tuple[str | None, float | None, int | None]:
+    """
+    Extract event summary, hours_from_now, and duration from a natural language message.
+    Returns (summary, hours_from_now, duration_minutes).
+    Handles: 'schedule gym at 5pm', 'set a reminder for meeting at 3:30 pm', etc.
+    """
+    import re
+    from datetime import datetime as dt_cls
+
+    # Extract time pattern: "at 5pm", "at 3:30 PM", "at 17:00"
+    time_match = re.search(
+        r'(?:at|for|@)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm|AM|PM)?',
+        msg
+    )
+
+    hours_from_now = 1  # default: 1 hour from now
+    if time_match:
+        hour = int(time_match.group(1))
+        minute = int(time_match.group(2) or 0)
+        ampm = (time_match.group(3) or "").lower()
+
+        if ampm == "pm" and hour < 12:
+            hour += 12
+        elif ampm == "am" and hour == 12:
+            hour = 0
+
+        now = dt_cls.now()
+        target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        # If the time is already past today, schedule for tomorrow
+        if target <= now:
+            from datetime import timedelta
+            target = target + timedelta(days=1)
+
+        diff = (target - now).total_seconds() / 3600
+        hours_from_now = max(0.1, diff)  # at least 6 minutes out
+
+    # Extract duration: "for 2 hours", "for 30 minutes", "for 1.5 hours"
+    dur_match = re.search(r'for\s+(\d+\.?\d*)\s*(hour|hr|minute|min)', msg.lower())
+    duration_minutes = 60  # default
+    if dur_match:
+        val = float(dur_match.group(1))
+        unit = dur_match.group(2)
+        if unit.startswith("min"):
+            duration_minutes = int(val)
+        else:
+            duration_minutes = int(val * 60)
+
+    # Extract summary: strip out the time/duration/command parts to get the event name
+    summary = msg
+    # Remove common command prefixes
+    for prefix in [
+        "can you put on my calendar", "put on my calendar",
+        "can you put on calendar", "put on calendar",
+        "fix my schedule", "set a reminder for", "set a reminder",
+        "set reminder for", "set reminder", "add to my calendar",
+        "add to calendar", "add event", "create event", "book",
+        "remind me about", "remind me to", "can you put", "schedule",
+        "add", "put", "can you"
+    ]:
+        if summary.lower().startswith(prefix):
+            summary = summary[len(prefix):].strip()
+            break
+
+    # Remove the time and duration parts from the summary
+    summary = re.sub(r'(?:at|for|@)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM)?', '', summary)
+    summary = re.sub(r'for\s+\d+\.?\d*\s*(?:hour|hr|minute|min)s?', '', summary)
+    summary = re.sub(r'\s+', ' ', summary).strip().strip('.,!?')
+
+    if not summary:
+        summary = "KIRA Scheduled Event"
+    else:
+        summary = summary.capitalize()
+
+    return summary, hours_from_now, duration_minutes
 
 
-def check_task_commands(user_message: str, session_id: str | None) -> str | None:
+def parse_and_run_tool(response_text: str, user_message: str, session_id: str | None) -> str | None:
     """
-    Phase 3: Detect task-related intents.
-    - Add task:  "I need to...", "I have to...", "remind me to...", "today I should..."
-    - Mark done: "I'm done with...", "mark ... as done", "finished ...", "completed ..."
-    - List:      "what are my tasks", "my pending tasks", "my tasks"
+    Parse Ollama's response. If it contains a TOOL call, run it and return the result.
+    Otherwise, return None.
     """
-    if not session_id:
+    # Match TOOL: <name> and ARGS: <json>
+    tool_match = re.search(r'(?i)TOOL:\s*(\w+)', response_text)
+    if not tool_match:
         return None
 
-    msg = user_message.lower().strip()
+    tool_name = tool_match.group(1).lower().strip()
+    
+    # Try to find ARGS: {...}
+    args_match = re.search(r'(?i)ARGS:\s*(\{.*?\})', response_text, re.DOTALL)
+    args = {}
+    if args_match:
+        try:
+            args = json.loads(args_match.group(1).strip())
+        except Exception as e:
+            log.warning(f"Failed to parse tool arguments JSON: {args_match.group(1)}. Error: {e}")
 
-    # ── List tasks ──
-    if any(phrase in msg for phrase in ["what are my tasks", "my pending tasks", "my tasks", "list my tasks", "show my tasks"]):
+    log.info(f"[Tool Calling] Detected tool: {tool_name} with args: {args}")
+
+    # 1. add_reminder
+    if tool_name == "add_reminder":
+        summary = args.get("summary")
+        time_val = args.get("time")
+        duration_minutes = args.get("duration_minutes", 60)
+
+        # Fallback to natural language parsing of the original message
+        nlp_summary, nlp_hours, nlp_duration = _parse_schedule_datetime(user_message)
+
+        if not summary:
+            summary = nlp_summary
+        
+        hours_from_now = nlp_hours
+        if duration_minutes is None:
+            duration_minutes = nlp_duration
+
+        # If time is in HH:MM format, calculate hours_from_now from time
+        if time_val and isinstance(time_val, str):
+            t_match = re.match(r'(\d{1,2}):(\d{2})', time_val.strip())
+            if t_match:
+                hour = int(t_match.group(1))
+                minute = int(t_match.group(2))
+                from datetime import datetime as dt_cls, timedelta
+                now = dt_cls.now()
+                target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                if target <= now:
+                    target += timedelta(days=1)
+                hours_from_now = (target - now).total_seconds() / 3600
+
+        try:
+            duration_minutes = int(duration_minutes)
+        except Exception:
+            duration_minutes = 60
+
+        return add_reminder(summary, hours_from_now=hours_from_now, duration_minutes=duration_minutes)
+
+    # 2. get_schedule
+    elif tool_name == "get_schedule":
+        return get_schedule()
+
+    # 3. add_task
+    elif tool_name == "add_task":
+        if not session_id:
+            return "I cannot add tasks without a valid session."
+        summary = args.get("summary")
+        if not summary:
+            summary = user_message.strip()
+        return add_task(session_id, summary)
+
+    # 4. mark_done
+    elif tool_name == "mark_done":
+        if not session_id:
+            return "I cannot manage tasks without a valid session."
+        keyword = args.get("keyword")
+        if not keyword:
+            keyword = user_message.strip()
+        return mark_done(session_id, keyword)
+
+    # 5. list_tasks
+    elif tool_name == "list_tasks":
+        if not session_id:
+            return "I cannot list tasks without a valid session."
         return list_tasks(session_id)
 
-    # ── Mark done ──
-    done_prefixes = ["i'm done with ", "im done with ", "i am done with ",
-                     "mark ", "finished ", "completed ", "done with "]
-    for prefix in done_prefixes:
-        if msg.startswith(prefix):
-            keyword = msg.replace(prefix, "").replace(" as done", "").strip()
-            if keyword:
-                return mark_done(session_id, keyword)
-
-    # ── Add task ──
-    task_prefixes = ["i need to ", "i have to ", "remind me to ",
-                     "today i should ", "i should ", "i must ",
-                     "i gotta ", "don't let me forget to ",
-                     "dont let me forget to ", "my task is "]
-    for prefix in task_prefixes:
-        if msg.startswith(prefix):
-            summary = user_message[len(prefix):].strip().capitalize()
-            if summary:
-                return add_task(session_id, summary)
-
+    log.warning(f"Unknown tool requested: {tool_name}")
     return None
 
 
@@ -369,17 +522,23 @@ async def chat_text(req: ChatRequest):
     # Get conversation history for this session
     history = get_session_history(req.session_id)
 
-    # Phase 3: Check task commands first, then calendar, then normal AI
-    task_response = check_task_commands(req.message, req.session_id)
-    cal_response = check_calendar_commands(req.message) if not task_response else None
-    intercepted = task_response or cal_response
+    # Phase 1: Intent detection (Query Ollama WITHOUT history to avoid conversational bias)
+    ollama_response = await query_ollama(req.message, conversation_history=None)
 
-    if intercepted:
-        response_text = intercepted
-        log.info(f"[/chat] Command Intercept: '{response_text}'")
+    # Check if the AI wants to call a tool
+    tool_result = parse_and_run_tool(ollama_response, req.message, req.session_id)
+    if tool_result is not None:
+        response_text = tool_result
+        intercepted = True
+        log.info(f"[/chat] Tool call result: '{response_text}'")
     else:
-        # Query phi3:mini with history context
-        response_text = await query_ollama(req.message, conversation_history=history)
+        # Phase 2: If no tool was called, and history exists, query Ollama WITH history for context
+        if history:
+            log.info("[/chat] No tool detected, querying Ollama with history for conversational response...")
+            response_text = await query_ollama(req.message, conversation_history=history)
+        else:
+            response_text = ollama_response
+        intercepted = False
         log.info(f"[/chat] Response: '{response_text[:80]}...'")
 
     # Phase 3: Prepend any pending hourly reminders
@@ -389,7 +548,9 @@ async def chat_text(req: ChatRequest):
     suggest_gemini = needs_gemini(response_text) if not intercepted else False
 
     # Save this exchange to session history
-    update_session(req.session_id, req.message, response_text)
+    # If a tool was run, format it with TOOL/ARGS/RESULT details to maintain tool context in history
+    history_response = f"{ollama_response.strip()}\nRESULT: {response_text}" if intercepted else response_text
+    update_session(req.session_id, req.message, history_response)
 
     return KiraResponse(
         response=response_text,
@@ -436,17 +597,23 @@ async def voice_chat(
         # Step 2: Get conversation history for context
         history = get_session_history(session_id)
 
-        # Phase 3: Check task commands first, then calendar, then normal AI
-        task_response = check_task_commands(transcription, session_id)
-        cal_response = check_calendar_commands(transcription) if not task_response else None
-        intercepted = task_response or cal_response
+        # Step 3: Intent detection (Query Ollama WITHOUT history to avoid conversational bias)
+        ollama_response = await query_ollama(transcription, conversation_history=None)
 
-        if intercepted:
-            response_text = intercepted
-            log.info(f"[/voice] Command Intercept: '{response_text}'")
+        # Check if the AI wants to call a tool
+        tool_result = parse_and_run_tool(ollama_response, transcription, session_id)
+        if tool_result is not None:
+            response_text = tool_result
+            intercepted = True
+            log.info(f"[/voice] Tool call result: '{response_text}'")
         else:
-            # Step 3: Get AI response from phi3:mini with history
-            response_text = await query_ollama(transcription, conversation_history=history)
+            # Step 3b: If no tool was called, and history exists, query Ollama WITH history for context
+            if history:
+                log.info("[/voice] No tool detected, querying Ollama with history for conversational response...")
+                response_text = await query_ollama(transcription, conversation_history=history)
+            else:
+                response_text = ollama_response
+            intercepted = False
             log.info(f"[/voice] Response: '{response_text[:80]}...'")
 
         # Phase 3: Prepend any pending hourly reminders
@@ -456,7 +623,9 @@ async def voice_chat(
         suggest_gemini = needs_gemini(response_text) if not intercepted else False
 
         # Step 5: Save this exchange to session history
-        update_session(session_id, transcription, response_text)
+        # If a tool was run, format it with TOOL/ARGS/RESULT details to maintain tool context in history
+        history_response = f"{ollama_response.strip()}\nRESULT: {response_text}" if intercepted else response_text
+        update_session(session_id, transcription, history_response)
 
         return KiraResponse(
             transcription=transcription,
