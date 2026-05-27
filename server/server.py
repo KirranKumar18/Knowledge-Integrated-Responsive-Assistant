@@ -511,6 +511,22 @@ async def health_check():
     }
 
 
+@app.get("/alerts")
+async def get_alerts():
+    """
+    Endpoint for the phone client to poll for productivity alerts.
+    Returns any pending alerts and clears them.
+    """
+    alerts = monitor.get_and_clear_alerts()
+    alert_msg = alerts[0] if alerts else None
+    return {
+        "alerts": alerts,
+        "alert": alert_msg,
+        "message": alert_msg,
+        "status": "success" if alert_msg else "no_alerts"
+    }
+
+
 @app.post("/chat", response_model=KiraResponse)
 async def chat_text(req: ChatRequest):
     """

@@ -20,7 +20,7 @@ YELLOW = "\033[93m"
 RESET = "\033[0m"
 
 # Keywords that indicate a distracting window
-DISTRACTING_KEYWORDS = ["YouTube", "Twitter", "X", "Instagram", "Reddit", "Facebook", "Netflix"]
+DISTRACTING_KEYWORDS = ["YouTube", "Twitter", "X", "Instagram", "Reddit", "Facebook", "Netflix","whatsapp"]
 
 # How long (in seconds) the user is allowed to be distracted before KIRA intervenes
 DISTRACTION_THRESHOLD = 300  # 5 minutes
@@ -31,6 +31,8 @@ class ProductivityMonitor:
         self._thread: Optional[threading.Thread] = None
         self.current_distraction_time = 0
         self.last_check_time = 0
+        self.pending_alerts = []
+        self._lock = threading.Lock()
 
     def _check_window(self):
         if not gw:
@@ -69,7 +71,36 @@ class ProductivityMonitor:
     def _trigger_intervention(self, title: str):
         """Called when distraction threshold is reached."""
         log.warning(f"{YELLOW}[Monitor] 🚨 PRODUCTIVITY ALERT:{RESET} You have been distracted by '{title}' for too long!")
-        # TODO: Integrate with KIRA's voice to actually speak to the user
+        
+        # Check if queue already contains an alert to prevent spam backup
+        with self._lock:
+            if len(self.pending_alerts) > 0:
+                log.info("[Monitor] Alert skipped because an alert is already pending in the queue.")
+                return
+
+        app_name = "distractions"
+        for keyword in DISTRACTING_KEYWORDS:
+            if keyword.lower() in title.lower():
+                app_name = keyword
+                break
+        
+        if app_name.lower() == "whatsapp":
+            app_name = "WhatsApp"
+        elif app_name.lower() == "youtube":
+            app_name = "YouTube"
+        else:
+            app_name = app_name.capitalize()
+
+        message = f"Hey! You've been distracted by {app_name} for too long. Let's get back to work!"
+        with self._lock:
+            self.pending_alerts.append(message)
+
+    def get_and_clear_alerts(self):
+        """Thread-safe retrieval and clearing of pending alerts."""
+        with self._lock:
+            alerts = list(self.pending_alerts)
+            self.pending_alerts.clear()
+        return alerts
 
     def _monitor_loop(self):
         self.last_check_time = time.time()
@@ -78,7 +109,7 @@ class ProductivityMonitor:
                 self._check_window()
             except Exception as e:
                 log.error(f"Error checking window: {e}")
-            time.sleep(5)  # Check every 5 seconds
+            time.sleep(2)  # Check every 2 seconds
 
     def start(self):
         if self.is_running:
