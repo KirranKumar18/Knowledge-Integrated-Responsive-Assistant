@@ -93,15 +93,70 @@ def get_schedule(max_results=5) -> str:
         log.error(f"Error fetching schedule: {e}")
         return "I encountered an error while trying to read your calendar."
 
-def add_reminder(summary: str, hours_from_now: int = 1, duration_minutes: int = 60) -> str:
+def add_reminder(
+    summary: str, 
+    hours_from_now: float | None = None, 
+    duration_minutes: int = 60,
+    date_str: str | None = None,
+    time_str: str | None = None
+) -> str:
     """Adds a simple reminder event to the primary calendar."""
     service = get_calendar_service()
     if not service:
         return "I am not connected to your Google Calendar yet."
 
     try:
-        start_dt = datetime.datetime.now().astimezone() + datetime.timedelta(hours=hours_from_now)
-        end_dt = start_dt + datetime.timedelta(minutes=duration_minutes)
+        import datetime as dt_cls
+        now = dt_cls.datetime.now().astimezone()
+
+        if date_str or time_str:
+            # Parse date (format: YYYY-MM-DD)
+            if date_str:
+                try:
+                    parsed_date = dt_cls.datetime.strptime(date_str.strip(), "%Y-%m-%d").date()
+                except ValueError:
+                    parsed_date = now.date()
+            else:
+                parsed_date = now.date()
+
+            # Parse time (format: HH:MM)
+            if time_str:
+                try:
+                    parsed_time = dt_cls.datetime.strptime(time_str.strip(), "%H:%M").time()
+                except ValueError:
+                    parsed_time = dt_cls.time(9, 0)
+            else:
+                parsed_time = (now + dt_cls.timedelta(hours=1)).time()
+
+            start_dt = dt_cls.datetime.combine(parsed_date, parsed_time).astimezone()
+
+            # If the time has already passed today, roll it over to tomorrow
+            if start_dt <= now and parsed_date == now.date():
+                start_dt += dt_cls.timedelta(days=1)
+        else:
+            # Fallback to relative hours offset
+            offset = hours_from_now if hours_from_now is not None else 1
+            start_dt = now + dt_cls.timedelta(hours=offset)
+
+        end_dt = start_dt + dt_cls.timedelta(minutes=duration_minutes)
+
+        # Check for existing duplicate event around start_dt
+        try:
+            time_min = (start_dt - dt_cls.timedelta(minutes=1)).isoformat()
+            time_max = (start_dt + dt_cls.timedelta(minutes=1)).isoformat()
+            existing_events = service.events().list(
+                calendarId='primary',
+                timeMin=time_min,
+                timeMax=time_max,
+                singleEvents=True
+            ).execute().get('items', [])
+            
+            for event_item in existing_events:
+                if event_item.get('summary', '').lower().strip() == summary.lower().strip():
+                    log.info(f"Skipping duplicate event: '{summary}' at {start_dt}")
+                    return f"'{summary}' is already on your calendar for that time."
+        except Exception as dup_err:
+            log.warning(f"Failed to check duplicates: {dup_err}")
 
         event = {
             'summary': summary,
@@ -114,7 +169,7 @@ def add_reminder(summary: str, hours_from_now: int = 1, duration_minutes: int = 
         }
 
         service.events().insert(calendarId='primary', body=event).execute()
-        log.info(f"Added calendar event: {summary}")
+        log.info(f"Added calendar event: {summary} at {start_dt}")
         return f"Successfully added {summary} to your calendar."
     except Exception as e:
         log.error(f"Error adding reminder: {e}")

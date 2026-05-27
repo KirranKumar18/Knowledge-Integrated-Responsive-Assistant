@@ -167,13 +167,15 @@ async def query_ollama(prompt: str, conversation_history: list[dict] | None = No
     # where we want phi3:mini to follow strict tool-calling formatting without being biased by conversational history.
     if conversation_history is None:
         # Phase 1: Tool-calling system prompt
+        current_date_str = datetime.now().strftime("%Y-%m-%d, %A")
         system_content = (
-            "You are KIRA, a personal AI voice assistant.\n\n"
+            "You are KIRA, a personal AI voice assistant.\n"
+            f"Today's date is {current_date_str}.\n\n"
             "You have access to these tools. When the user's request needs one, "
             "respond ONLY with the TOOL and ARGS block, and nothing else (no comments, notes, or extra text).\n"
             "Important: Keep task summaries and event names specific and exact. Do not generalize them (e.g., do not change 'buy milk' to 'Buy milk').\n\n"
             "TOOL: add_reminder\n"
-            "ARGS: {\"summary\": \"event name\", \"time\": \"HH:MM\", \"duration_minutes\": 60}\n\n"
+            "ARGS: {\"summary\": \"event name\", \"date\": \"YYYY-MM-DD\", \"time\": \"HH:MM\", \"duration_minutes\": 60}\n\n"
             "TOOL: get_schedule\n"
             "ARGS: {}\n\n"
             "TOOL: add_task\n"
@@ -182,13 +184,15 @@ async def query_ollama(prompt: str, conversation_history: list[dict] | None = No
             "ARGS: {\"keyword\": \"task name\"}\n\n"
             "TOOL: list_tasks\n"
             "ARGS: {}\n\n"
+            "To schedule a reminder, resolve relative dates (like 'tomorrow', 'next Tuesday') or absolute dates (like '2nd of june') to the actual target date in YYYY-MM-DD format based on today's date.\n\n"
             "If no tool is needed, respond normally in plain conversational text.\n"
             "Rules for normal responses:\n"
             "1. Keep every reply to 1-2 sentences maximum. Never write paragraphs.\n"
             "2. No bullet points, no lists, no markdown — plain spoken English only.\n"
             "3. Be casual and friendly. No fillers.\n\n"
-            "Examples:\n"
-            "- \"remind me about standup tomorrow at 9\" -> TOOL: add_reminder\nARGS: {\"summary\": \"Standup\", \"time\": \"09:00\", \"duration_minutes\": 60}\n"
+            "Examples (assume today is Wednesday, 2026-05-27):\n"
+            "- \"remind me about standup tomorrow at 9\" -> TOOL: add_reminder\nARGS: {\"summary\": \"Standup\", \"date\": \"2026-05-28\", \"time\": \"09:00\", \"duration_minutes\": 60}\n"
+            "- \"test on 2nd of june at 3pm\" -> TOOL: add_reminder\nARGS: {\"summary\": \"Test\", \"date\": \"2026-06-02\", \"time\": \"15:00\", \"duration_minutes\": 60}\n"
             "- \"what's on my calendar\" -> TOOL: get_schedule\nARGS: {}\n"
             "- \"I need to buy milk\" -> TOOL: add_task\nARGS: {\"summary\": \"Buy milk\"}\n"
             "- \"finished buying milk\" -> TOOL: mark_done\nARGS: {\"keyword\": \"buy milk\"}\n"
@@ -399,6 +403,7 @@ def parse_and_run_tool(response_text: str, user_message: str, session_id: str | 
     # 1. add_reminder
     if tool_name == "add_reminder":
         summary = args.get("summary")
+        date_val = args.get("date")
         time_val = args.get("time")
         duration_minutes = args.get("duration_minutes", 60)
 
@@ -408,29 +413,24 @@ def parse_and_run_tool(response_text: str, user_message: str, session_id: str | 
         if not summary:
             summary = nlp_summary
         
-        hours_from_now = nlp_hours
-        if duration_minutes is None:
-            duration_minutes = nlp_duration
-
-        # If time is in HH:MM format, calculate hours_from_now from time
-        if time_val and isinstance(time_val, str):
-            t_match = re.match(r'(\d{1,2}):(\d{2})', time_val.strip())
-            if t_match:
-                hour = int(t_match.group(1))
-                minute = int(t_match.group(2))
-                from datetime import datetime as dt_cls, timedelta
-                now = dt_cls.now()
-                target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-                if target <= now:
-                    target += timedelta(days=1)
-                hours_from_now = (target - now).total_seconds() / 3600
-
         try:
-            duration_minutes = int(duration_minutes)
+            duration_minutes = int(duration_minutes) if duration_minutes is not None else 60
         except Exception:
             duration_minutes = 60
 
-        return add_reminder(summary, hours_from_now=hours_from_now, duration_minutes=duration_minutes)
+        if date_val or time_val:
+            return add_reminder(
+                summary,
+                duration_minutes=duration_minutes,
+                date_str=date_val,
+                time_str=time_val
+            )
+        else:
+            return add_reminder(
+                summary,
+                hours_from_now=nlp_hours,
+                duration_minutes=duration_minutes
+            )
 
     # 2. get_schedule
     elif tool_name == "get_schedule":
