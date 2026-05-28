@@ -16,7 +16,7 @@ from typing import Optional
 log = logging.getLogger("kira-server.tasks")
 
 # How often (in seconds) to nag the user about a pending task
-REMINDER_INTERVAL = 3600  # 1 hour
+REMINDER_INTERVAL = 10  # 10 seconds
 
 
 # ---------------------------------------------------------------------------
@@ -29,7 +29,7 @@ _tasks: dict[str, list[dict]] = {}
 
 def add_task(session_id: str, summary: str) -> str:
     """
-    Add a new hourly-reminder task for a session.
+    Add a new 10-second-reminder task for a session.
     Returns a confirmation string for KIRA to speak.
     """
     if session_id not in _tasks:
@@ -44,17 +44,17 @@ def add_task(session_id: str, summary: str) -> str:
     _tasks[session_id].append({
         "summary": summary,
         "created_at": now,
-        "last_reminded_at": now,  # don't nag immediately — first reminder after 1hr
+        "last_reminded_at": now,  # don't nag immediately — first reminder after 10s
     })
     log.info(f"[Tasks] Added for {session_id[:8]}...: '{summary}'")
-    return f"Got it, I'll remind you about '{summary}' every hour until it's done."
+    return f"Got it, I'll remind you about '{summary}' every 10 seconds until it's done."
 
 
 def get_pending_reminders(session_id: str) -> list[str]:
     """
-    Returns a list of reminder strings for tasks that are due (≥1hr since
+    Returns a list of reminder strings for tasks that are due (≥10s since
     last reminded). Also updates last_reminded_at so we don't re-fire
-    until the next hour.
+    until the next 10s.
     """
     if session_id not in _tasks or not _tasks[session_id]:
         return []
@@ -77,16 +77,46 @@ def mark_done(session_id: str, keyword: str) -> str:
     Fuzzy-match a keyword against active tasks and remove the first match.
     Returns a confirmation string for KIRA to speak.
     """
+    import re
     if session_id not in _tasks or not _tasks[session_id]:
         return "You don't have any active tasks right now."
 
     keyword_lower = keyword.lower().strip()
 
-    # Try to find a task whose summary contains the keyword
+    # 1. Try exact substring match first (keyword in task summary, or vice versa)
     for i, task in enumerate(_tasks[session_id]):
-        if keyword_lower in task["summary"].lower():
+        if keyword_lower in task["summary"].lower() or task["summary"].lower() in keyword_lower:
             removed = _tasks[session_id].pop(i)
             log.info(f"[Tasks] Completed for {session_id[:8]}...: '{removed['summary']}'")
+            return f"Nice! Marked '{removed['summary']}' as done."
+
+    # 2. Fallback 1: If there is only one task, assume the user is referring to it
+    if len(_tasks[session_id]) == 1:
+        removed = _tasks[session_id].pop(0)
+        log.info(f"[Tasks] Completed single task via fallback for {session_id[:8]}...: '{removed['summary']}'")
+        return f"Nice! Marked '{removed['summary']}' as done."
+
+    # 3. Fallback 2: Token-based overlap matching (for multiple tasks)
+    # Filter out common stop/instruction words
+    stop_words = {
+        "i", "completed", "the", "task", "finished", "done", "my", "to", "me", 
+        "about", "for", "a", "an", "and", "of", "it", "have", "marked", "mark"
+    }
+    keyword_words = [w for w in re.split(r'\W+', keyword_lower) if w and w not in stop_words]
+    
+    if keyword_words:
+        best_match_idx = -1
+        max_overlap = 0
+        for i, task in enumerate(_tasks[session_id]):
+            task_words = set(re.split(r'\W+', task["summary"].lower()))
+            overlap = sum(1 for w in keyword_words if w in task_words)
+            if overlap > max_overlap:
+                max_overlap = overlap
+                best_match_idx = i
+        
+        if best_match_idx != -1 and max_overlap > 0:
+            removed = _tasks[session_id].pop(best_match_idx)
+            log.info(f"[Tasks] Completed task via token overlap match ({max_overlap} words) for {session_id[:8]}...: '{removed['summary']}'")
             return f"Nice! Marked '{removed['summary']}' as done."
 
     return f"I couldn't find a task matching '{keyword}'. Say 'what are my tasks' to see your list."
