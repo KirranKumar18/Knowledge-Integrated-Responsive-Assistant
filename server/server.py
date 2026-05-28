@@ -73,7 +73,7 @@ from pydantic import BaseModel
 
 from handlers.gemini_handler import needs_gemini, query_gemini, is_gemini_available
 from handlers.calendar_handler import get_schedule, add_reminder
-from handlers.task_reminder import add_task, get_pending_reminders, mark_done, list_tasks, get_task_count
+from handlers.task_reminder import add_task, get_pending_reminders, mark_done, list_tasks, get_task_count, get_all_pending_reminders
 from services import monitor, load_monitor
 from fastapi.responses import HTMLResponse, FileResponse
 
@@ -634,19 +634,10 @@ def parse_and_run_tool(response_text: str, user_message: str, session_id: str | 
 
 def prepend_reminders(response_text: str, session_id: str | None) -> str:
     """
-    Check for pending hourly reminders and prepend them to the response.
-    This way KIRA naturally speaks the reminders before answering.
+    Check for pending reminders. (Disabled in favor of background alerts).
     """
-    if not session_id:
-        return response_text
+    return response_text
 
-    reminders = get_pending_reminders(session_id)
-    if not reminders:
-        return response_text
-
-    reminder_block = " ".join(reminders)
-    log.info(f"[Tasks] Injecting {len(reminders)} reminder(s) for session {session_id[:8]}...")
-    return f"{reminder_block} Anyway, {response_text}"
 
 
 # ---------------------------------------------------------------------------
@@ -682,17 +673,25 @@ async def health_check():
 @app.get("/alerts")
 async def get_alerts():
     """
-    Endpoint for the phone client to poll for productivity alerts.
+    Endpoint for the phone client to poll for productivity alerts and task reminders.
     Returns any pending alerts and clears them.
     """
+    # 1. Get productivity alerts
     alerts = monitor.get_and_clear_alerts()
-    alert_msg = alerts[0] if alerts else None
+    
+    # 2. Get due task reminders across all sessions
+    task_reminders = get_all_pending_reminders()
+    
+    # Combine alerts
+    all_alerts = alerts + task_reminders
+    alert_msg = all_alerts[0] if all_alerts else None
     return {
-        "alerts": alerts,
+        "alerts": all_alerts,
         "alert": alert_msg,
         "message": alert_msg,
         "status": "success" if alert_msg else "no_alerts"
     }
+
 
 
 @app.post("/chat", response_model=KiraResponse)

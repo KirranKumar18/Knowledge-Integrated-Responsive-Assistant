@@ -72,6 +72,29 @@ def get_pending_reminders(session_id: str) -> list[str]:
     return due
 
 
+def get_all_pending_reminders() -> list[str]:
+    """
+    Returns a list of reminder strings for tasks that are due across all sessions.
+    Also updates last_reminded_at.
+    """
+    if not _tasks:
+        return []
+
+    now = time.time()
+    due = []
+
+    for session_id, task_list in _tasks.items():
+        for task in task_list:
+            elapsed = now - task["last_reminded_at"]
+            if elapsed >= REMINDER_INTERVAL:
+                due.append(f"Reminder: you still need to {task['summary'].lower()}.")
+                task["last_reminded_at"] = now  # reset the clock
+                log.info(f"[Tasks] Reminded about: '{task['summary']}' (session: {session_id[:8]}...)")
+
+    return due
+
+
+
 def mark_done(session_id: str, keyword: str) -> str:
     """
     Fuzzy-match a keyword against active tasks and remove the first match.

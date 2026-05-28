@@ -144,11 +144,15 @@ def termux_tts_speak(text: str, block: bool = False):
 
 
 
+is_recording = False
+
 def termux_record_audio(output_path: str, duration: int = RECORDING_DURATION):
     """
     Record audio from the microphone using Termux:API.
     Records for `duration` seconds and saves to `output_path`.
     """
+    global is_recording
+    is_recording = True
     # Delete stale file first — prevents old recording from being sent if this one fails
     if os.path.exists(output_path):
         os.remove(output_path)
@@ -183,6 +187,7 @@ def termux_record_audio(output_path: str, duration: int = RECORDING_DURATION):
         record_proc.wait(timeout=5)
         time.sleep(0.8)  # give mic time to fully release before next recording
 
+        is_recording = False
         if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
             size_kb = os.path.getsize(output_path) / 1024
             print(f"✅ Recorded ({size_kb:.1f} KB)")
@@ -192,10 +197,12 @@ def termux_record_audio(output_path: str, duration: int = RECORDING_DURATION):
             return False
 
     except FileNotFoundError:
+        is_recording = False
         print("❌ termux-microphone-record not found")
         print("   Install it: pkg install termux-api")
         return False
     except Exception as e:
+        is_recording = False
         print(f"❌ Recording error: {e}")
         return False
 
@@ -433,6 +440,26 @@ def handle_offline_turn(prompt: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Background active notifications loop
+# ---------------------------------------------------------------------------
+def alerts_poll_loop(server_url: str):
+    """Background loop to poll for productivity alerts and task reminders."""
+    while True:
+        try:
+            if not is_recording:
+                resp = requests.get(f"{server_url}/alerts", timeout=3)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    alerts = data.get("alerts", [])
+                    for alert in alerts:
+                        print(f"\n📢 [Notification] KIRA: {alert}")
+                        termux_tts_speak(alert)
+        except Exception:
+            pass
+        time.sleep(2)
+
+
+# ---------------------------------------------------------------------------
 # Main conversation loop
 # ---------------------------------------------------------------------------
 def conversation_loop(server_url: str, text_mode: bool = False):
@@ -461,6 +488,14 @@ def conversation_loop(server_url: str, text_mode: bool = False):
 
     termux_toast("KIRA is ready")
     termux_tts_speak("KIRA is online and ready.")
+
+    # Start background alerts polling thread
+    poll_thread = threading.Thread(
+        target=alerts_poll_loop,
+        args=(server_url,),
+        daemon=True
+    )
+    poll_thread.start()
 
     while True:
         try:

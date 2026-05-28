@@ -23,7 +23,7 @@ RESET = "\033[0m"
 DISTRACTING_KEYWORDS = ["YouTube", "Twitter", "X", "Instagram", "Reddit", "Facebook", "Netflix","whatsapp"]
 
 # How long (in seconds) the user is allowed to be distracted before KIRA intervenes
-DISTRACTION_THRESHOLD = 300  # 5 minutes
+DISTRACTION_THRESHOLD = 10  # 5 minute
 
 class ProductivityMonitor:
     def __init__(self):
