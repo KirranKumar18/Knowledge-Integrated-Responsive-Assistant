@@ -46,7 +46,19 @@ class ProductivityMonitor:
         title = window.title
         
         # Check if the title contains any distracting keywords
-        is_distracted = any(keyword.lower() in title.lower() for keyword in DISTRACTING_KEYWORDS)
+        is_distracted = False
+        import re
+        for keyword in DISTRACTING_KEYWORDS:
+            kw_lower = keyword.lower()
+            title_lower = title.lower()
+            if kw_lower == 'x':
+                # Match 'x' as a standalone word (e.g. "on X") or "x.com"
+                if re.search(r'\bx\b|\bx\.com\b', title_lower):
+                    is_distracted = True
+                    break
+            elif kw_lower in title_lower:
+                is_distracted = True
+                break
         
         now = time.time()
         elapsed = now - self.last_check_time if self.last_check_time > 0 else 0
@@ -54,7 +66,7 @@ class ProductivityMonitor:
 
         if is_distracted:
             self.current_distraction_time += elapsed
-            log.info(f"{YELLOW}[Monitor]{RESET} Distraction detected: '{title}'. Total time: {int(self.current_distraction_time)}s")
+        #    log.info(f"{YELLOW}[Monitor]{RESET} Distraction detected: '{title}'. Total time: {int(self.current_distraction_time)}s")
             
             if self.current_distraction_time >= DISTRACTION_THRESHOLD:
                 self._trigger_intervention(title)

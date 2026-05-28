@@ -57,37 +57,85 @@ def get_calendar_service():
         log.error(f"Failed to build calendar service: {e}")
         return None
 
-def get_schedule(max_results=5) -> str:
-    """Gets the upcoming events from the primary calendar and formats them for KIRA to speak."""
+def get_schedule(date_str: str | None = None, max_results=5) -> str:
+    """Gets the events from the primary calendar and formats them for KIRA to speak."""
     service = get_calendar_service()
     if not service:
         return "I am not connected to your Google Calendar yet."
 
     try:
-        now = datetime.datetime.utcnow().isoformat() + 'Z'  # 'Z' indicates UTC time
-        events_result = service.events().list(
-            calendarId='primary', timeMin=now,
-            maxResults=max_results, singleEvents=True,
-            orderBy='startTime').execute()
+        import datetime as dt_cls
+        
+        if date_str:
+            try:
+                parsed_date = dt_cls.datetime.strptime(date_str.strip(), "%Y-%m-%d").date()
+            except ValueError:
+                parsed_date = dt_cls.datetime.now().astimezone().date()
+            
+            # Start of the day: 00:00:00 in local timezone
+            local_tz = dt_cls.datetime.now().astimezone().tzinfo
+            time_min = dt_cls.datetime.combine(parsed_date, dt_cls.time.min).replace(tzinfo=local_tz).isoformat()
+            time_max = dt_cls.datetime.combine(parsed_date, dt_cls.time.max).replace(tzinfo=local_tz).isoformat()
+            date_label = parsed_date.strftime("%A, %B %d")
+        else:
+            time_min = dt_cls.datetime.utcnow().isoformat() + 'Z'
+            time_max = None
+            date_label = None
+
+        kwargs = {
+            'calendarId': 'primary',
+            'timeMin': time_min,
+            'maxResults': max_results,
+            'singleEvents': True,
+            'orderBy': 'startTime'
+        }
+        if time_max:
+            kwargs['timeMax'] = time_max
+
+        events_result = service.events().list(**kwargs).execute()
         events = events_result.get('items', [])
 
         if not events:
+            if date_label:
+                return f"You have no events scheduled for {date_label}."
             return "You have no upcoming events scheduled."
 
         schedule = []
         for event in events:
             start = event['start'].get('dateTime', event['start'].get('date'))
+            is_all_day = 'date' in event['start'] and 'dateTime' not in event['start']
             
-            # Simplify the date string for spoken audio (e.g. "Wednesday at 03:00 PM")
-            try:
-                dt = datetime.datetime.fromisoformat(start.replace('Z', '+00:00'))
-                time_str = dt.strftime("%A at %I:%M %p")
-            except ValueError:
-                time_str = start
+            if is_all_day:
+                if date_str:
+                    time_str = "all day"
+                else:
+                    try:
+                        dt = dt_cls.datetime.strptime(start.strip(), "%Y-%m-%d")
+                        time_str = dt.strftime("%A, %B %d (all day)")
+                    except ValueError:
+                        time_str = f"{start} (all day)"
+            else:
+                # Simplify the date string for spoken audio
+                try:
+                    dt = dt_cls.datetime.fromisoformat(start.replace('Z', '+00:00'))
+                    if date_str:
+                        time_str = dt.strftime("at %I:%M %p")
+                    else:
+                        time_str = dt.strftime("%A, %B %d at %I:%M %p")
+                except ValueError:
+                    time_str = start
 
             summary = event.get('summary', 'Untitled Event')
-            schedule.append(f"{summary} on {time_str}")
+            if date_str:
+                if is_all_day:
+                    schedule.append(f"{summary} ({time_str})")
+                else:
+                    schedule.append(f"{summary} {time_str}")
+            else:
+                schedule.append(f"{summary} on {time_str}")
             
+        if date_label:
+            return f"Here is your schedule for {date_label}: " + ". ".join(schedule) + "."
         return "Here is your schedule: " + ". ".join(schedule) + "."
     except Exception as e:
         log.error(f"Error fetching schedule: {e}")

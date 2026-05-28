@@ -25,6 +25,7 @@ import tempfile
 import logging
 import re
 import json
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -50,7 +51,8 @@ from pydantic import BaseModel
 from handlers.gemini_handler import needs_gemini, query_gemini, is_gemini_available
 from handlers.calendar_handler import get_schedule, add_reminder
 from handlers.task_reminder import add_task, get_pending_reminders, mark_done, list_tasks, get_task_count
-from services.productivity_monitor import monitor
+from services import monitor, load_monitor
+from fastapi.responses import HTMLResponse, FileResponse
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -71,6 +73,14 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 log = logging.getLogger("kira-server")
+
+# Suppress spammy endpoints from uvicorn access logs
+class EndpointFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        return "/api/stats" not in message and "/alerts" not in message
+
+logging.getLogger("uvicorn.access").addFilter(EndpointFilter())
 
 # ---------------------------------------------------------------------------
 # App setup
@@ -102,19 +112,30 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 log.info(f"Loading faster-whisper model '{WHISPER_MODEL_SIZE}' ...")
 try:
+    log.info("Attempting to load Whisper model on CUDA (GPU)...")
     whisper_model = WhisperModel(
         WHISPER_MODEL_SIZE,
-        device="cpu",             # CPU mode — works on all systems
-        compute_type="int8",      # quantized for speed + lower memory
+        device="cuda",
+        compute_type="float16",  # float16 is standard & fastest for CUDA
     )
-except Exception as e:
-    log.warning(f"int8 failed ({e}), trying float32...")
-    whisper_model = WhisperModel(
-        WHISPER_MODEL_SIZE,
-        device="cpu",
-        compute_type="float32",
-    )
-log.info("faster-whisper model loaded ✓")
+    log.info("faster-whisper model loaded on GPU (CUDA) ✓")
+except Exception as gpu_err:
+    log.warning(f"Failed to load Whisper on GPU ({gpu_err}). Falling back to CPU...")
+    try:
+        whisper_model = WhisperModel(
+            WHISPER_MODEL_SIZE,
+            device="cpu",
+            compute_type="int8",      # quantized for speed + lower memory
+        )
+        log.info("faster-whisper model loaded on CPU (int8) ✓")
+    except Exception as e:
+        log.warning(f"int8 failed ({e}), trying float32 on CPU...")
+        whisper_model = WhisperModel(
+            WHISPER_MODEL_SIZE,
+            device="cpu",
+            compute_type="float32",
+        )
+        log.info("faster-whisper model loaded on CPU (float32) ✓")
 
 # ---------------------------------------------------------------------------
 # Phase 2: Session-based conversation memory
@@ -177,7 +198,7 @@ async def query_ollama(prompt: str, conversation_history: list[dict] | None = No
             "TOOL: add_reminder\n"
             "ARGS: {\"summary\": \"event name\", \"date\": \"YYYY-MM-DD\", \"time\": \"HH:MM\", \"duration_minutes\": 60}\n\n"
             "TOOL: get_schedule\n"
-            "ARGS: {}\n\n"
+            "ARGS: {\"date\": \"YYYY-MM-DD\"}\n\n"
             "TOOL: add_task\n"
             "ARGS: {\"summary\": \"task name\"}\n\n"
             "TOOL: mark_done\n"
@@ -193,7 +214,10 @@ async def query_ollama(prompt: str, conversation_history: list[dict] | None = No
             "Examples (assume today is Wednesday, 2026-05-27):\n"
             "- \"remind me about standup tomorrow at 9\" -> TOOL: add_reminder\nARGS: {\"summary\": \"Standup\", \"date\": \"2026-05-28\", \"time\": \"09:00\", \"duration_minutes\": 60}\n"
             "- \"test on 2nd of june at 3pm\" -> TOOL: add_reminder\nARGS: {\"summary\": \"Test\", \"date\": \"2026-06-02\", \"time\": \"15:00\", \"duration_minutes\": 60}\n"
-            "- \"what's on my calendar\" -> TOOL: get_schedule\nARGS: {}\n"
+            "- \"what's on my calendar\" -> TOOL: get_schedule\n"
+            "- \"what is my schedule today\" -> TOOL: get_schedule\nARGS: {\"date\": \"2026-05-27\"}\n"
+            "- \"what is my schedule tomorrow\" -> TOOL: get_schedule\nARGS: {\"date\": \"2026-05-28\"}\n"
+            "- \"do i have anything on Friday\" -> TOOL: get_schedule\nARGS: {\"date\": \"2026-05-29\"}\n"
             "- \"I need to buy milk\" -> TOOL: add_task\nARGS: {\"summary\": \"Buy milk\"}\n"
             "- \"finished buying milk\" -> TOOL: mark_done\nARGS: {\"keyword\": \"buy milk\"}\n"
             "- \"what are my tasks\" -> TOOL: list_tasks\nARGS: {}\n"
@@ -235,6 +259,7 @@ async def query_ollama(prompt: str, conversation_history: list[dict] | None = No
     }
 
     try:
+        load_monitor.ollama_active = True
         async with httpx.AsyncClient(timeout=120.0) as client:
             resp = await client.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload)
             resp.raise_for_status()
@@ -249,6 +274,8 @@ async def query_ollama(prompt: str, conversation_history: list[dict] | None = No
     except Exception as e:
         log.error(f"Ollama error: {e}")
         raise HTTPException(status_code=500, detail=f"Ollama error: {str(e)}")
+    finally:
+        load_monitor.ollama_active = False
 
 
 # ---------------------------------------------------------------------------
@@ -259,20 +286,48 @@ def transcribe_audio(audio_path: str) -> str:
     Transcribe audio file using faster-whisper (CTranslate2 backend).
     Optimized for low-latency voice assistant use (short utterances).
     """
+    global whisper_model
     log.info(f"Transcribing: {audio_path}")
-    segments, info = whisper_model.transcribe(
-        audio_path,
-        language="en",                      # skip language detection (~7s saved)
-        beam_size=1,                        # greedy decoding — fastest for short audio
-        vad_filter=True,                    # Silero VAD — skips silence
-        vad_parameters=dict(
-            min_silence_duration_ms=500,
-        ),
-        condition_on_previous_text=False,   # prevents context buildup slowdown
-    )
-    text = " ".join(seg.text.strip() for seg in segments).strip()
-    log.info(f"Transcribed ({info.language}, {info.language_probability:.0%}): '{text}'")
-    return text
+    try:
+        segments, info = whisper_model.transcribe(
+            audio_path,
+            language="en",                      # skip language detection (~7s saved)
+            beam_size=1,                        # greedy decoding — fastest for short audio
+            vad_filter=True,                    # Silero VAD — skips silence
+            vad_parameters=dict(
+                min_silence_duration_ms=500,
+            ),
+            condition_on_previous_text=False,   # prevents context buildup slowdown
+        )
+        # Evaluate segments generator immediately to force inference
+        text = " ".join(seg.text.strip() for seg in segments).strip()
+        log.info(f"Transcribed ({info.language}, {info.language_probability:.0%}): '{text}'")
+        return text
+    except Exception as e:
+        log.warning(f"Whisper transcription failed ({e}). Re-initializing on CPU and retrying...")
+        try:
+            whisper_model = WhisperModel(
+                WHISPER_MODEL_SIZE,
+                device="cpu",
+                compute_type="int8",
+            )
+            segments, info = whisper_model.transcribe(
+                audio_path,
+                language="en",
+                beam_size=1,
+                max_initial_timestamp=1.0,
+                vad_filter=True,
+                vad_parameters=dict(
+                    min_silence_duration_ms=500,
+                ),
+                condition_on_previous_text=False,
+            )
+            text = " ".join(seg.text.strip() for seg in segments).strip()
+            log.info(f"Fallback Transcribed successfully: '{text}'")
+            return text
+        except Exception as fallback_err:
+            log.error(f"Whisper fallback failed: {fallback_err}")
+            raise fallback_err
 
 
 # ---------------------------------------------------------------------------
@@ -434,7 +489,8 @@ def parse_and_run_tool(response_text: str, user_message: str, session_id: str | 
 
     # 2. get_schedule
     elif tool_name == "get_schedule":
-        return get_schedule()
+        date_val = args.get("date")
+        return get_schedule(date_str=date_val)
 
     # 3. add_task
     elif tool_name == "add_task":
@@ -535,45 +591,75 @@ async def chat_text(req: ChatRequest):
     """
     log.info(f"[/chat] Received: '{req.message}' (session: {req.session_id or 'none'})")
 
-    # Get conversation history for this session
-    history = get_session_history(req.session_id)
+    load_monitor.active_requests += 1
+    start_total = time.time()
+    ollama_time = 0.0
+    status = "success"
+    response_text = ""
+    error_msg = None
 
-    # Phase 1: Intent detection (Query Ollama WITHOUT history to avoid conversational bias)
-    ollama_response = await query_ollama(req.message, conversation_history=None)
+    try:
+        # Get conversation history for this session
+        history = get_session_history(req.session_id)
 
-    # Check if the AI wants to call a tool
-    tool_result = parse_and_run_tool(ollama_response, req.message, req.session_id)
-    if tool_result is not None:
-        response_text = tool_result
-        intercepted = True
-        log.info(f"[/chat] Tool call result: '{response_text}'")
-    else:
-        # Phase 2: If no tool was called, and history exists, query Ollama WITH history for context
-        if history:
-            log.info("[/chat] No tool detected, querying Ollama with history for conversational response...")
-            response_text = await query_ollama(req.message, conversation_history=history)
+        # Phase 1: Intent detection (Query Ollama WITHOUT history to avoid conversational bias)
+        t_ollama_1 = time.time()
+        ollama_response = await query_ollama(req.message, conversation_history=None)
+        ollama_time += (time.time() - t_ollama_1)
+
+        # Check if the AI wants to call a tool
+        tool_result = parse_and_run_tool(ollama_response, req.message, req.session_id)
+        if tool_result is not None:
+            response_text = tool_result
+            intercepted = True
+            log.info(f"[/chat] Tool call result: '{response_text}'")
         else:
-            response_text = ollama_response
-        intercepted = False
-        log.info(f"[/chat] Response: '{response_text[:80]}...'")
+            # Phase 2: If no tool was called, and history exists, query Ollama WITH history for context
+            if history:
+                log.info("[/chat] No tool detected, querying Ollama with history for conversational response...")
+                t_ollama_2 = time.time()
+                response_text = await query_ollama(req.message, conversation_history=history)
+                ollama_time += (time.time() - t_ollama_2)
+            else:
+                response_text = ollama_response
+            intercepted = False
+            log.info(f"[/chat] Response: '{response_text[:80]}...'")
 
-    # Phase 3: Prepend any pending hourly reminders
-    response_text = prepend_reminders(response_text, req.session_id)
+        # Phase 3: Prepend any pending hourly reminders
+        response_text = prepend_reminders(response_text, req.session_id)
 
-    # Phase 2: Check if Gemini should be suggested
-    suggest_gemini = needs_gemini(response_text) if not intercepted else False
+        # Phase 2: Check if Gemini should be suggested
+        suggest_gemini = needs_gemini(response_text) if not intercepted else False
 
-    # Save this exchange to session history
-    # If a tool was run, format it with TOOL/ARGS/RESULT details to maintain tool context in history
-    history_response = f"{ollama_response.strip()}\nRESULT: {response_text}" if intercepted else response_text
-    update_session(req.session_id, req.message, history_response)
+        # Save this exchange to session history
+        # If a tool was run, format it with TOOL/ARGS/RESULT details to maintain tool context in history
+        history_response = f"{ollama_response.strip()}\nRESULT: {response_text}" if intercepted else response_text
+        update_session(req.session_id, req.message, history_response)
 
-    return KiraResponse(
-        response=response_text,
-        timestamp=datetime.now().isoformat(),
-        session_id=req.session_id,
-        gemini_suggested=suggest_gemini,
-    )
+        return KiraResponse(
+            response=response_text,
+            timestamp=datetime.now().isoformat(),
+            session_id=req.session_id,
+            gemini_suggested=suggest_gemini,
+        )
+    except Exception as e:
+        status = "error"
+        error_msg = str(e)
+        raise e
+    finally:
+        total_time = time.time() - start_total
+        load_monitor.active_requests -= 1
+        load_monitor.add_history_entry({
+            "timestamp": datetime.now().strftime("%H:%M:%S"),
+            "endpoint": "/chat",
+            "input": req.message,
+            "output": error_msg or response_text,
+            "whisper_time": 0.0,
+            "ollama_time": ollama_time,
+            "gemini_time": 0.0,
+            "total_time": total_time,
+            "status": status
+        })
 
 
 @app.post("/voice", response_model=KiraResponse)
@@ -591,6 +677,15 @@ async def voice_chat(
     """
     log.info(f"[/voice] Received audio: {audio.filename} ({audio.content_type}) (session: {session_id or 'none'})")
 
+    load_monitor.active_requests += 1
+    start_total = time.time()
+    whisper_time = 0.0
+    ollama_time = 0.0
+    status = "success"
+    response_text = ""
+    transcription = ""
+    error_msg = None
+
     # Save uploaded audio to a temp file for Whisper
     suffix = os.path.splitext(audio.filename or "audio.wav")[1] or ".wav"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
@@ -600,12 +695,19 @@ async def voice_chat(
 
     try:
         # Step 1: Transcribe audio → text
-        transcription = transcribe_audio(tmp_path)
+        load_monitor.whisper_active = True
+        t_whisper = time.time()
+        try:
+            transcription = transcribe_audio(tmp_path)
+        finally:
+            whisper_time = time.time() - t_whisper
+            load_monitor.whisper_active = False
 
         if not transcription:
+            response_text = "I didn't catch that. Could you say it again?"
             return KiraResponse(
                 transcription="",
-                response="I didn't catch that. Could you say it again?",
+                response=response_text,
                 timestamp=datetime.now().isoformat(),
                 session_id=session_id,
             )
@@ -614,7 +716,9 @@ async def voice_chat(
         history = get_session_history(session_id)
 
         # Step 3: Intent detection (Query Ollama WITHOUT history to avoid conversational bias)
+        t_ollama_1 = time.time()
         ollama_response = await query_ollama(transcription, conversation_history=None)
+        ollama_time += (time.time() - t_ollama_1)
 
         # Check if the AI wants to call a tool
         tool_result = parse_and_run_tool(ollama_response, transcription, session_id)
@@ -626,7 +730,9 @@ async def voice_chat(
             # Step 3b: If no tool was called, and history exists, query Ollama WITH history for context
             if history:
                 log.info("[/voice] No tool detected, querying Ollama with history for conversational response...")
+                t_ollama_2 = time.time()
                 response_text = await query_ollama(transcription, conversation_history=history)
+                ollama_time += (time.time() - t_ollama_2)
             else:
                 response_text = ollama_response
             intercepted = False
@@ -650,9 +756,28 @@ async def voice_chat(
             session_id=session_id,
             gemini_suggested=suggest_gemini,
         )
+    except Exception as e:
+        status = "error"
+        error_msg = str(e)
+        raise e
     finally:
         # Clean up temp file
-        os.unlink(tmp_path)
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+            
+        total_time = time.time() - start_total
+        load_monitor.active_requests -= 1
+        load_monitor.add_history_entry({
+            "timestamp": datetime.now().strftime("%H:%M:%S"),
+            "endpoint": "/voice",
+            "input": transcription or "[Empty/Unintelligible]",
+            "output": error_msg or response_text,
+            "whisper_time": whisper_time,
+            "ollama_time": ollama_time,
+            "gemini_time": 0.0,
+            "total_time": total_time,
+            "status": status
+        })
 
 
 @app.post("/gemini", response_model=KiraResponse)
@@ -668,40 +793,86 @@ async def gemini_query(req: GeminiRequest):
     """
     log.info(f"[/gemini] User approved Gemini for: '{req.prompt[:60]}...' (session: {req.session_id or 'none'})")
 
+    load_monitor.active_requests += 1
+    start_total = time.time()
+    gemini_time = 0.0
+    status = "success"
+    gemini_response = ""
+    error_msg = None
+
     if not is_gemini_available():
+        status = "error"
+        error_msg = "Gemini API key not configured."
+        load_monitor.active_requests -= 1
+        load_monitor.add_history_entry({
+            "timestamp": datetime.now().strftime("%H:%M:%S"),
+            "endpoint": "/gemini",
+            "input": req.prompt,
+            "output": error_msg,
+            "whisper_time": 0.0,
+            "ollama_time": 0.0,
+            "gemini_time": 0.0,
+            "total_time": time.time() - start_total,
+            "status": status
+        })
         raise HTTPException(
             status_code=503,
             detail="Gemini API key not configured. Set GEMINI_API_KEY environment variable.",
         )
 
-    # Get conversation history for context
-    history = get_session_history(req.session_id)
+    try:
+        # Get conversation history for context
+        history = get_session_history(req.session_id)
 
-    # Query Gemini
-    gemini_response = await query_gemini(req.prompt, conversation_history=history)
+        # Query Gemini
+        load_monitor.gemini_active = True
+        t_gemini = time.time()
+        try:
+            gemini_response = await query_gemini(req.prompt, conversation_history=history)
+        finally:
+            gemini_time = time.time() - t_gemini
+            load_monitor.gemini_active = False
 
-    if gemini_response is None:
-        raise HTTPException(
-            status_code=500,
-            detail="Gemini query failed. Check server logs for details.",
+        if gemini_response is None:
+            raise HTTPException(
+                status_code=500,
+                detail="Gemini query failed. Check server logs for details.",
+            )
+
+        # Update session with the Gemini response (replaces the weak phi3 response)
+        # We pop the last assistant message and replace it with Gemini's
+        if req.session_id and req.session_id in sessions:
+            session = sessions[req.session_id]
+            # Remove the last assistant message (the weak phi3 response)
+            if session and session[-1]["role"] == "assistant":
+                session.pop()
+                session.append({"role": "assistant", "content": gemini_response})
+
+        return KiraResponse(
+            response=gemini_response,
+            model=f"gemini ({os.getenv('GEMINI_MODEL', 'gemini-2.5-flash')})",
+            timestamp=datetime.now().isoformat(),
+            session_id=req.session_id,
+            gemini_suggested=False,
         )
-
-    # Update session with the Gemini response (replaces the weak phi3 response)
-    # We pop the last assistant message and replace it with Gemini's
-    if req.session_id and req.session_id in sessions:
-        session = sessions[req.session_id]
-        # Remove the last assistant message (the weak phi3 response)
-        if session and session[-1]["role"] == "assistant":
-            session.pop()
-            session.append({"role": "assistant", "content": gemini_response})
-
-    return KiraResponse(
-        response=gemini_response,
-        model=f"gemini ({os.getenv('GEMINI_MODEL', 'gemini-2.5-flash')})",
-        timestamp=datetime.now().isoformat(),
-        session_id=req.session_id,
-        gemini_suggested=False,
-    )
+    except Exception as e:
+        status = "error"
+        error_msg = str(e)
+        raise e
+    finally:
+        total_time = time.time() - start_total
+        load_monitor.active_requests -= 1
+        load_monitor.add_history_entry({
+            "timestamp": datetime.now().strftime("%H:%M:%S"),
+            "endpoint": "/gemini",
+            "input": req.prompt,
+            "output": error_msg or gemini_response,
+            "whisper_time": 0.0,
+            "ollama_time": 0.0,
+            "gemini_time": gemini_time,
+            "total_time": total_time,
+            "status": status
+        })
 
 
 # ---------------------------------------------------------------------------
@@ -754,6 +925,21 @@ async def delete_task(session_id: str, keyword: str):
     """Manually mark a task as done by keyword."""
     result = mark_done(session_id, keyword)
     return {"session_id": session_id, "result": result}
+
+
+@app.get("/")
+async def get_dashboard():
+    """Serves the KIRA server load monitor dashboard."""
+    dashboard_path = Path(__file__).parent / "static" / "index.html"
+    if dashboard_path.exists():
+        return FileResponse(dashboard_path)
+    return HTMLResponse("<h1>KIRA Load Monitor Dashboard not found. Check server/static/index.html</h1>", status_code=404)
+
+
+@app.get("/api/stats")
+async def get_load_stats():
+    """Returns the current system load and KIRA AI metrics."""
+    return load_monitor.get_stats()
 
 
 # ---------------------------------------------------------------------------

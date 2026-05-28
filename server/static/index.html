@@ -1,0 +1,723 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KIRA AI Load Monitor</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #080b11;
+            --card-bg: rgba(17, 24, 39, 0.65);
+            --card-border: rgba(255, 255, 255, 0.07);
+            --accent-primary: #8b5cf6;
+            --accent-secondary: #d946ef;
+            --text-main: #f3f4f6;
+            --text-muted: #9ca3af;
+            --color-success: #14b8a6;
+            --color-warning: #f97316;
+            --color-danger: #f43f5e;
+            --gradient-accent: linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-secondary) 100%);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            background-image: 
+                radial-gradient(at 10% 20%, rgba(139, 92, 246, 0.15) 0px, transparent 50%),
+                radial-gradient(at 90% 80%, rgba(217, 70, 239, 0.1) 0px, transparent 50%);
+            background-attachment: fixed;
+            color: var(--text-main);
+            font-family: 'Outfit', sans-serif;
+            min-height: 100vh;
+            padding: 2rem;
+            display: flex;
+            flex-direction: column;
+            gap: 2rem;
+        }
+
+        /* Utility classes */
+        .glass {
+            background: var(--card-bg);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid var(--card-border);
+            border-radius: 16px;
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1.5rem 2rem;
+        }
+
+        .header-title-group {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .logo-glow {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background-color: var(--color-success);
+            box-shadow: 0 0 12px 4px rgba(20, 184, 166, 0.5);
+            animation: pulse-glow 2s infinite ease-in-out;
+        }
+
+        @keyframes pulse-glow {
+            0%, 100% { opacity: 0.6; transform: scale(0.9); }
+            50% { opacity: 1; transform: scale(1.1); box-shadow: 0 0 16px 6px rgba(20, 184, 166, 0.7); }
+        }
+
+        h1 {
+            font-size: 1.8rem;
+            font-weight: 700;
+            background: linear-gradient(to right, #f3f4f6, #9ca3af);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .server-time {
+            font-family: 'Inter', sans-serif;
+            color: var(--text-muted);
+            font-size: 0.95rem;
+        }
+
+        /* Layout Grid */
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1.5rem;
+        }
+
+        @media (max-width: 1024px) {
+            .dashboard-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* Widgets */
+        .widget {
+            padding: 1.5rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1.25rem;
+        }
+
+        .widget-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: var(--text-main);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            padding-bottom: 0.75rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        /* Resources Stats */
+        .resource-row {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .resource-info {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.95rem;
+        }
+
+        .resource-label {
+            color: var(--text-muted);
+        }
+
+        .resource-value {
+            font-family: 'Inter', sans-serif;
+            font-weight: 600;
+        }
+
+        .progress-bar-container {
+            width: 100%;
+            height: 10px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 5px;
+            overflow: hidden;
+        }
+
+        .progress-bar {
+            height: 100%;
+            width: 0%;
+            border-radius: 5px;
+            transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.5s ease;
+        }
+
+        /* Status Panels */
+        .status-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 1rem;
+        }
+
+        @media (max-width: 600px) {
+            .status-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .status-card {
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid rgba(255, 255, 255, 0.04);
+            border-radius: 12px;
+            padding: 1.25rem;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0.75rem;
+            text-align: center;
+            transition: all 0.3s ease;
+        }
+
+        .status-card:hover {
+            transform: translateY(-2px);
+            border-color: rgba(255, 255, 255, 0.1);
+            background: rgba(255, 255, 255, 0.04);
+        }
+
+        .engine-indicator {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background-color: var(--text-muted);
+            transition: all 0.5s ease;
+        }
+
+        .engine-indicator.idle {
+            background-color: #6b7280;
+            box-shadow: 0 0 8px rgba(107, 114, 128, 0.3);
+        }
+
+        .engine-indicator.active {
+            background-color: var(--color-warning);
+            box-shadow: 0 0 16px var(--color-warning);
+            animation: pulse-engine 1s infinite ease-in-out;
+        }
+
+        .engine-indicator.ready {
+            background-color: var(--color-success);
+            box-shadow: 0 0 12px var(--color-success);
+        }
+
+        .engine-indicator.error {
+            background-color: var(--color-danger);
+            box-shadow: 0 0 16px var(--color-danger);
+        }
+
+        @keyframes pulse-engine {
+            0%, 100% { transform: scale(0.9); opacity: 0.8; }
+            50% { transform: scale(1.1); opacity: 1; }
+        }
+
+        .engine-name {
+            font-size: 1rem;
+            font-weight: 600;
+        }
+
+        .engine-status-text {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            font-family: 'Inter', sans-serif;
+        }
+
+        /* Latency Metrics */
+        .metric-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 1rem;
+        }
+
+        .metric-card {
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid rgba(255, 255, 255, 0.04);
+            border-radius: 12px;
+            padding: 1rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+        }
+
+        .metric-label {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+        }
+
+        .metric-value {
+            font-size: 1.4rem;
+            font-weight: 700;
+            font-family: 'Inter', sans-serif;
+        }
+
+        /* History Table */
+        .history-section {
+            width: 100%;
+        }
+
+        .table-container {
+            width: 100%;
+            overflow-x: auto;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            text-align: left;
+            font-family: 'Inter', sans-serif;
+            font-size: 0.9rem;
+        }
+
+        th {
+            position: sticky;
+            top: 0;
+            background: #111827;
+            padding: 0.75rem 1rem;
+            color: var(--text-muted);
+            font-weight: 600;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+            font-family: 'Outfit', sans-serif;
+        }
+
+        td {
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+            color: var(--text-main);
+            max-width: 250px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        tr:hover td {
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 0.2rem 0.5rem;
+            border-radius: 6px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .badge.success {
+            background: rgba(20, 184, 166, 0.15);
+            color: var(--color-success);
+            border: 1px solid rgba(20, 184, 166, 0.3);
+        }
+
+        .badge.warning, .badge.timeout {
+            background: rgba(249, 115, 22, 0.15);
+            color: var(--color-warning);
+            border: 1px solid rgba(249, 115, 22, 0.3);
+        }
+
+        .badge.danger, .badge.error {
+            background: rgba(244, 63, 94, 0.15);
+            color: var(--color-danger);
+            border: 1px solid rgba(244, 63, 94, 0.3);
+        }
+
+        /* Tips Panel */
+        .tips-panel {
+            padding: 1.25rem;
+            background: rgba(249, 115, 22, 0.05);
+            border: 1px solid rgba(249, 115, 22, 0.15);
+            border-radius: 12px;
+            display: none;
+            gap: 0.75rem;
+            align-items: flex-start;
+        }
+
+        .tips-icon {
+            font-size: 1.5rem;
+            line-height: 1;
+        }
+
+        .tips-content {
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+        }
+
+        .tips-title {
+            font-weight: 600;
+            color: var(--color-warning);
+            font-size: 0.95rem;
+        }
+
+        .tips-text {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            line-height: 1.4;
+        }
+
+        /* Stats Badge Counter */
+        .stats-counter {
+            background: var(--gradient-accent);
+            padding: 0.2rem 0.6rem;
+            border-radius: 10px;
+            font-size: 0.8rem;
+            color: white;
+            font-family: 'Inter', sans-serif;
+        }
+    </style>
+</head>
+<body>
+
+    <header class="glass">
+        <div class="header-title-group">
+            <div class="logo-glow"></div>
+            <h1>KIRA AI Server Dashboard</h1>
+        </div>
+        <div class="server-time" id="clock">Loading...</div>
+    </header>
+
+    <div class="dashboard-grid">
+        <!-- Left: Resources & Engine Statuses -->
+        <div class="glass widget">
+            <div class="widget-title">
+                <span>System Resource Load</span>
+                <span class="stats-counter" id="active-req-count">0 Active Requests</span>
+            </div>
+            
+            <div class="resource-row">
+                <div class="resource-info">
+                    <span class="resource-label">CPU Usage</span>
+                    <span class="resource-value" id="cpu-val">0%</span>
+                </div>
+                <div class="progress-bar-container">
+                    <div class="progress-bar" id="cpu-bar"></div>
+                </div>
+            </div>
+
+            <div class="resource-row">
+                <div class="resource-info">
+                    <span class="resource-label">Memory Usage</span>
+                    <span class="resource-value" id="mem-val">0%</span>
+                </div>
+                <div class="progress-bar-container">
+                    <div class="progress-bar" id="mem-bar"></div>
+                </div>
+            </div>
+
+            <div class="widget-title" style="margin-top: 1rem;">
+                <span>AI Subsystems Status</span>
+            </div>
+
+            <div class="status-grid">
+                <div class="status-card">
+                    <div class="engine-indicator" id="whisper-indicator"></div>
+                    <div class="engine-name">Whisper</div>
+                    <div class="engine-status-text" id="whisper-status">Idle</div>
+                </div>
+
+                <div class="status-card">
+                    <div class="engine-indicator" id="ollama-indicator"></div>
+                    <div class="engine-name">Ollama</div>
+                    <div class="engine-status-text" id="ollama-status">Idle</div>
+                </div>
+
+                <div class="status-card">
+                    <div class="engine-indicator" id="gemini-indicator"></div>
+                    <div class="engine-name">Gemini</div>
+                    <div class="engine-status-text" id="gemini-status">Ready</div>
+                </div>
+            </div>
+
+            <!-- Suggestion / Tips Alert -->
+            <div class="tips-panel" id="tips-box">
+                <span class="tips-icon">💡</span>
+                <div class="tips-content">
+                    <div class="tips-title" id="tips-header">Performance Optimization Tip</div>
+                    <div class="tips-text" id="tips-description">Your AI requests are taking longer than normal. Consider using a smaller Whisper model size or ensuring Ollama runs on a GPU interface.</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right: Performance Metrics & Latency -->
+        <div class="glass widget">
+            <div class="widget-title">
+                <span>AI Engine Response Times</span>
+            </div>
+
+            <div class="metric-grid">
+                <div class="metric-card">
+                    <span class="metric-label">Avg Whisper Transcription</span>
+                    <span class="metric-value" id="avg-whisper">0.00s</span>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-label">Avg Ollama Response</span>
+                    <span class="metric-value" id="avg-ollama">0.00s</span>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-label">Avg Gemini Response</span>
+                    <span class="metric-value" id="avg-gemini">0.00s</span>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-label">Avg Total Request Latency</span>
+                    <span class="metric-value" id="avg-total">0.00s</span>
+                </div>
+            </div>
+
+            <div class="metric-grid" style="grid-template-columns: repeat(3, 1fr); margin-top: 0.5rem;">
+                <div class="metric-card" style="align-items: center;">
+                    <span class="metric-label">Total Requests</span>
+                    <span class="metric-value" id="total-reqs">0</span>
+                </div>
+                <div class="metric-card" style="align-items: center;">
+                    <span class="metric-label">Failed Requests</span>
+                    <span class="metric-value" id="failed-reqs" style="color: var(--color-danger);">0</span>
+                </div>
+                <div class="metric-card" style="align-items: center;">
+                    <span class="metric-label">Success Rate</span>
+                    <span class="metric-value" id="success-rate">100%</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bottom: Request History Log -->
+    <div class="glass widget history-section">
+        <div class="widget-title">
+            <span>Recent Request History Log</span>
+            <span class="server-time" style="font-size: 0.85rem;">Showing last 50 requests</span>
+        </div>
+
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width: 100px;">Time</th>
+                        <th style="width: 100px;">Endpoint</th>
+                        <th>User Request</th>
+                        <th>KIRA Response</th>
+                        <th style="width: 100px; text-align: right;">Whisper Time</th>
+                        <th style="width: 100px; text-align: right;">AI Gen Time</th>
+                        <th style="width: 110px; text-align: right;">Total Time</th>
+                        <th style="width: 100px; text-align: center;">Status</th>
+                    </tr>
+                </thead>
+                <tbody id="history-rows">
+                    <tr>
+                        <td colspan="8" style="text-align: center; color: var(--text-muted); padding: 2rem;">No requests processed yet. Send voice or text prompts to KIRA!</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        // Update the clock in header
+        function updateClock() {
+            const now = new Date();
+            document.getElementById('clock').innerText = now.toLocaleString();
+        }
+        setInterval(updateClock, 1000);
+        updateClock();
+
+        // Helper to update progress bars
+        function updateProgressBar(elementId, valueId, percentage) {
+            const bar = document.getElementById(elementId);
+            const text = document.getElementById(valueId);
+            
+            percentage = Math.min(100, Math.max(0, parseFloat(percentage) || 0));
+            bar.style.width = percentage + '%';
+            text.innerText = percentage.toFixed(1) + '%';
+
+            // Change colors based on load
+            if (percentage > 85) {
+                bar.style.backgroundColor = 'var(--color-danger)';
+                text.style.color = 'var(--color-danger)';
+            } else if (percentage > 60) {
+                bar.style.backgroundColor = 'var(--color-warning)';
+                text.style.color = 'var(--color-warning)';
+            } else {
+                bar.style.backgroundColor = 'var(--color-success)';
+                text.style.color = 'var(--text-main)';
+            }
+        }
+
+        // Fetch statistics from API and update dashboard
+        async function fetchStats() {
+            try {
+                const response = await fetch('/api/stats');
+                if (!response.ok) throw new Error('Network response not ok');
+                const data = await response.json();
+
+                // Update system resource levels
+                updateProgressBar('cpu-bar', 'cpu-val', data.system.cpu_percent);
+                updateProgressBar('mem-bar', 'mem-val', data.system.memory_percent);
+
+                // Update active requests
+                const activeReqs = data.status.active_requests || 0;
+                document.getElementById('active-req-count').innerText = `${activeReqs} Active Requests`;
+
+                // Update engine indicators
+                updateIndicator('whisper', data.status.whisper_active);
+                updateIndicator('ollama', data.status.ollama_active);
+                updateIndicator('gemini', data.status.gemini_active, true);
+
+                // Update averages
+                document.getElementById('avg-whisper').innerText = data.averages.whisper_seconds.toFixed(2) + 's';
+                document.getElementById('avg-ollama').innerText = data.averages.ollama_seconds.toFixed(2) + 's';
+                document.getElementById('avg-gemini').innerText = data.averages.gemini_seconds.toFixed(2) + 's';
+                document.getElementById('avg-total').innerText = data.averages.total_seconds.toFixed(2) + 's';
+
+                // Update counts
+                const total = data.totals.requests || 0;
+                const failures = data.totals.failures || 0;
+                const successRate = total > 0 ? Math.round(((total - failures) / total) * 100) : 100;
+
+                document.getElementById('total-reqs').innerText = total;
+                document.getElementById('failed-reqs').innerText = failures;
+                document.getElementById('success-rate').innerText = successRate + '%';
+
+                // Check for high latency / overload to display performance alerts
+                checkPerformanceAlerts(data);
+
+                // Populate history table
+                populateHistory(data.history);
+
+            } catch (error) {
+                console.error('Error fetching dashboard statistics:', error);
+            }
+        }
+
+        function updateIndicator(engine, isActive, isExternal = false) {
+            const indicator = document.getElementById(`${engine}-indicator`);
+            const statusText = document.getElementById(`${engine}-status`);
+
+            if (isActive) {
+                indicator.className = 'engine-indicator active';
+                statusText.innerText = 'Generating...';
+                statusText.style.color = 'var(--color-warning)';
+            } else {
+                if (isExternal) {
+                    indicator.className = 'engine-indicator ready';
+                    statusText.innerText = 'Ready';
+                    statusText.style.color = 'var(--color-success)';
+                } else {
+                    indicator.className = 'engine-indicator idle';
+                    statusText.innerText = 'Idle';
+                    statusText.style.color = 'var(--text-muted)';
+                }
+            }
+        }
+
+        function checkPerformanceAlerts(data) {
+            const tipsBox = document.getElementById('tips-box');
+            const tipsHeader = document.getElementById('tips-header');
+            const tipsDesc = document.getElementById('tips-description');
+
+            let showAlert = false;
+            
+            // 1. High CPU Load
+            if (data.system.cpu_percent > 85) {
+                tipsHeader.innerText = "System Overloaded: High CPU Usage";
+                tipsDesc.innerText = "CPU usage is extremely high. Close background apps on your laptop to speed up Whisper/Ollama.";
+                showAlert = true;
+            }
+            // 2. High Whisper Latency (Suggesting smaller model)
+            else if (data.averages.whisper_seconds > 6.0) {
+                tipsHeader.innerText = "Slow Whisper Transcription Alert";
+                tipsDesc.innerText = `Whisper takes an average of ${data.averages.whisper_seconds}s. Edit server.py config to pull a smaller model (e.g. 'base' or 'small') to reduce CPU load.`;
+                showAlert = true;
+            }
+            // 3. High Ollama Latency (Phi-3 is slow / queuing)
+            else if (data.averages.ollama_seconds > 10.0) {
+                tipsHeader.innerText = "Ollama Inference Latency Alert";
+                tipsDesc.innerText = `Local model generation averages ${data.averages.ollama_seconds}s. This happens if Ollama runs on CPU. Verify that Ollama serve is utilizing GPU resources, or switch to Gemini for complex questions.`;
+                showAlert = true;
+            }
+            // 4. Queued requests
+            else if (data.status.active_requests > 1) {
+                tipsHeader.innerText = "Multiple Requests Queued";
+                tipsDesc.innerText = "Server is handling multiple concurrent requests. Subsequent voice prompts may be delayed or timeout.";
+                showAlert = true;
+            }
+
+            if (showAlert) {
+                tipsBox.style.display = 'flex';
+            } else {
+                tipsBox.style.display = 'none';
+            }
+        }
+
+        function populateHistory(history) {
+            const tbody = document.getElementById('history-rows');
+            if (!history || history.length === 0) {
+                tbody.innerHTML = `
+                    <tr>
+                        <td colspan="8" style="text-align: center; color: var(--text-muted); padding: 2rem;">No requests processed yet. Send voice or text prompts to KIRA!</td>
+                    </tr>
+                `;
+                return;
+            }
+
+            let html = '';
+            history.forEach(item => {
+                const wTime = item.whisper_time > 0 ? item.whisper_time.toFixed(2) + 's' : '-';
+                const aiTime = (item.ollama_time > 0 || item.gemini_time > 0) 
+                    ? ((item.ollama_time || 0) + (item.gemini_time || 0)).toFixed(2) + 's' 
+                    : '-';
+                const total = item.total_time.toFixed(2) + 's';
+
+                const statusClass = item.status === 'success' ? 'success' : (item.status === 'timeout' ? 'timeout' : 'danger');
+
+                // Escape HTML for user input & output to avoid rendering exploits
+                const inputEscaped = escapeHtml(item.input || '');
+                const outputEscaped = escapeHtml(item.output || '');
+
+                html += `
+                    <tr>
+                        <td>${item.timestamp}</td>
+                        <td><code>${item.endpoint}</code></td>
+                        <td title="${inputEscaped}">${inputEscaped}</td>
+                        <td title="${outputEscaped}">${outputEscaped}</td>
+                        <td style="text-align: right;">${wTime}</td>
+                        <td style="text-align: right;">${aiTime}</td>
+                        <td style="text-align: right; font-weight: 600;">${total}</td>
+                        <td style="text-align: center;"><span class="badge ${statusClass}">${item.status}</span></td>
+                    </tr>
+                `;
+            });
+
+            tbody.innerHTML = html;
+        }
+
+        function escapeHtml(text) {
+            return text
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+        }
+
+        // Fetch stats every 2 seconds
+        setInterval(fetchStats, 2000);
+        fetchStats();
+    </script>
+</body>
+</html>
