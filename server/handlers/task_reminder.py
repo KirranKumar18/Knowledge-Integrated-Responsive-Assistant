@@ -40,7 +40,7 @@ def add_task(session_id: str, summary: str) -> str:
     def clean_item(text: str) -> str:
         text = text.strip()
         # Remove leading "task " or "tasks " case-insensitively
-        text = re.sub(r'^(?i)tasks?\s+', '', text)
+        text = re.sub(r'(?i)^tasks?\s+', '', text)
         return text.strip()
 
     # Split by " and ", " or ", and commas ","
