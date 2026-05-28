@@ -442,12 +442,15 @@ def handle_offline_turn(prompt: str) -> str | None:
 # ---------------------------------------------------------------------------
 # Background active notifications loop
 # ---------------------------------------------------------------------------
-def alerts_poll_loop(server_url: str):
+def alerts_poll_loop(server_url: str, session_state: dict):
     """Background loop to poll for productivity alerts and task reminders."""
     while True:
         try:
             if not is_recording:
-                resp = requests.get(f"{server_url}/alerts", timeout=3)
+                params = {}
+                if "id" in session_state:
+                    params["session_id"] = session_state["id"]
+                resp = requests.get(f"{server_url}/alerts", params=params, timeout=3)
                 if resp.status_code == 200:
                     data = resp.json()
                     alerts = data.get("alerts", [])
@@ -457,6 +460,7 @@ def alerts_poll_loop(server_url: str):
         except Exception:
             pass
         time.sleep(2)
+
 
 
 # ---------------------------------------------------------------------------
@@ -472,8 +476,9 @@ def conversation_loop(server_url: str, text_mode: bool = False):
     5. Speak response
     6. Repeat
     """
-    # Phase 2: Generate a session ID for conversation memory
-    session_id = str(uuid.uuid4())
+    # Phase 2: Generate a session ID for conversation memory and background polling
+    session_state = {"id": str(uuid.uuid4())}
+    session_id = session_state["id"]
     mode = "online"  # "online" or "offline"
 
     print("\n" + "=" * 50)
@@ -492,12 +497,13 @@ def conversation_loop(server_url: str, text_mode: bool = False):
     # Start background alerts polling thread
     poll_thread = threading.Thread(
         target=alerts_poll_loop,
-        args=(server_url,),
+        args=(server_url, session_state),
         daemon=True
     )
     poll_thread.start()
 
     while True:
+
         try:
             # Phase 2: Check connectivity at the start of each turn
             server_reachable = is_server_reachable(server_url)
@@ -515,7 +521,9 @@ def conversation_loop(server_url: str, text_mode: bool = False):
                 print(f"\n⚡ {switch_msg}")
                 termux_tts_speak(switch_msg)
                 # Start a new session since the server doesn't have the old one
-                session_id = str(uuid.uuid4())
+                session_state["id"] = str(uuid.uuid4())
+                session_id = session_state["id"]
+
 
             # ── Get user input ──────────────────────────────────────────
 
@@ -530,10 +538,12 @@ def conversation_loop(server_url: str, text_mode: bool = False):
                     break
                 # Phase 2: "new" or "new conversation" → reset session
                 if message.lower() in ("new", "new conversation", "reset", "forget"):
-                    session_id = str(uuid.uuid4())
+                    session_state["id"] = str(uuid.uuid4())
+                    session_id = session_state["id"]
                     print(f"🔄 New session: {session_id[:8]}...")
                     termux_tts_speak("Starting a fresh conversation.")
                     continue
+
 
                 user_prompt = message
                 result = None

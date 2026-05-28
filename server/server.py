@@ -671,7 +671,7 @@ async def health_check():
 
 
 @app.get("/alerts")
-async def get_alerts():
+async def get_alerts(session_id: Optional[str] = None):
     """
     Endpoint for the phone client to poll for productivity alerts and task reminders.
     Returns any pending alerts and clears them.
@@ -679,8 +679,9 @@ async def get_alerts():
     # 1. Get productivity alerts
     alerts = monitor.get_and_clear_alerts()
     
-    # 2. Get due task reminders across all sessions
-    task_reminders = get_all_pending_reminders()
+    # 2. Get due task reminders for the active session (or all if none provided)
+    task_reminders = get_all_pending_reminders(session_id)
+
     
     # Combine alerts
     all_alerts = alerts + task_reminders
