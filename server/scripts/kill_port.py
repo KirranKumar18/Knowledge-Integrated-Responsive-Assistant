@@ -5,11 +5,11 @@ import sys
 def free_port(port: int):
     try:
         # Find process using the port
-        print(f"🔍 Searching for process on port {port}...")
+        print(f"[Search] Searching for process on port {port}...")
         result = subprocess.run(f"netstat -ano | findstr :{port}", shell=True, capture_output=True, text=True)
         
         if not result.stdout.strip():
-            print(f"✅ Port {port} is already free!")
+            print(f"[OK] Port {port} is already free!")
             return
 
         # Extract PID (last column in netstat output)
@@ -24,12 +24,12 @@ def free_port(port: int):
             pid_to_kill = lines[0].split()[-1]
 
         # Kill the process
-        print(f"💀 Found stuck process (PID: {pid_to_kill}). Killing it...")
+        print(f"[Kill] Found stuck process (PID: {pid_to_kill}). Killing it...")
         subprocess.run(f"taskkill /PID {pid_to_kill} /F", shell=True)
-        print("✅ Port successfully freed!")
+        print("[OK] Port successfully freed!")
 
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"[Error] Error: {e}")
 
 if __name__ == "__main__":
     free_port(8000)

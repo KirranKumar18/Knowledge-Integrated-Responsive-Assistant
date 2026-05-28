@@ -92,13 +92,29 @@ def mark_done(session_id: str, keyword: str) -> str:
     return f"I couldn't find a task matching '{keyword}'. Say 'what are my tasks' to see your list."
 
 
-def list_tasks(session_id: str) -> str:
+def list_tasks(session_id: str, keyword: str | None = None) -> str:
     """
-    Returns a spoken-friendly list of all active tasks for the session.
+    Returns a spoken-friendly list of all active tasks, or a specific task if keyword is provided.
     """
     if session_id not in _tasks or not _tasks[session_id]:
+        if keyword:
+            return "no task"
         return "You don't have any active tasks right now."
 
+    if keyword:
+        keyword_lower = keyword.lower().strip()
+        # Search for a matching task
+        for task in _tasks[session_id]:
+            if keyword_lower in task["summary"].lower():
+                import datetime as dt_cls
+                # Convert created_at to a spoken-friendly date and time
+                dt = dt_cls.datetime.fromtimestamp(task["created_at"])
+                date_str = dt.strftime("%A, %B %d at %I:%M %p")
+                return f"Your task '{task['summary']}' is scheduled, created on {date_str}."
+        
+        return "no task"
+
+    # Original logic (list all)
     task_names = [t["summary"] for t in _tasks[session_id]]
 
     if len(task_names) == 1:

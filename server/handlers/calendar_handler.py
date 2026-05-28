@@ -57,7 +57,7 @@ def get_calendar_service():
         log.error(f"Failed to build calendar service: {e}")
         return None
 
-def get_schedule(date_str: str | None = None, max_results=5) -> str:
+def get_schedule(date_str: str | None = None, query: str | None = None, max_results=5) -> str:
     """Gets the events from the primary calendar and formats them for KIRA to speak."""
     service = get_calendar_service()
     if not service:
@@ -66,6 +66,9 @@ def get_schedule(date_str: str | None = None, max_results=5) -> str:
     try:
         import datetime as dt_cls
         
+        # If we have a query search, we query more upcoming events (e.g. next 30) to find a match
+        actual_max_results = 30 if query else max_results
+
         if date_str:
             try:
                 parsed_date = dt_cls.datetime.strptime(date_str.strip(), "%Y-%m-%d").date()
@@ -85,7 +88,7 @@ def get_schedule(date_str: str | None = None, max_results=5) -> str:
         kwargs = {
             'calendarId': 'primary',
             'timeMin': time_min,
-            'maxResults': max_results,
+            'maxResults': actual_max_results,
             'singleEvents': True,
             'orderBy': 'startTime'
         }
@@ -100,6 +103,33 @@ def get_schedule(date_str: str | None = None, max_results=5) -> str:
                 return f"You have no events scheduled for {date_label}."
             return "You have no upcoming events scheduled."
 
+        # If searching for a specific event keyword
+        if query:
+            query_lower = query.lower().strip()
+            for event in events:
+                summary = event.get('summary', 'Untitled Event')
+                if query_lower in summary.lower():
+                    start = event['start'].get('dateTime', event['start'].get('date'))
+                    is_all_day = 'date' in event['start'] and 'dateTime' not in event['start']
+                    
+                    if is_all_day:
+                        try:
+                            dt = dt_cls.datetime.strptime(start.strip(), "%Y-%m-%d")
+                            time_str = dt.strftime("%A, %B %d (all day)")
+                        except ValueError:
+                            time_str = f"{start} (all day)"
+                    else:
+                        try:
+                            dt = dt_cls.datetime.fromisoformat(start.replace('Z', '+00:00'))
+                            time_str = dt.strftime("%A, %B %d at %I:%M %p")
+                        except ValueError:
+                            time_str = start
+                            
+                    return f"Your event '{summary}' is scheduled for {time_str}."
+            
+            return f"I couldn't find any event matching '{query}' on your calendar."
+
+        # Original listing behavior
         schedule = []
         for event in events:
             start = event['start'].get('dateTime', event['start'].get('date'))

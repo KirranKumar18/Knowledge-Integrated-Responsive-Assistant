@@ -43,6 +43,29 @@ if _env_path.exists():
                 os.environ.setdefault(_key.strip(), _val.strip())
 
 import httpx
+
+# ---------------------------------------------------------------------------
+# Programmatic CUDA & cuDNN DLL configuration for Windows (faster-whisper GPU compatibility)
+# ---------------------------------------------------------------------------
+if os.name == "nt":
+    # CTranslate2 / faster-whisper on Windows looks for cublas64_12.dll and cudnn DLLs.
+    # If the user has a different CUDA Toolkit version (like CUDA 13) or missing cuDNN,
+    # we can dynamically load them from PyPI's nvidia packages if they are installed.
+    try:
+        import nvidia.cublas
+        import nvidia.cudnn
+        cublas_bin = Path(list(nvidia.cublas.__path__)[0]) / "bin"
+        cudnn_bin = Path(list(nvidia.cudnn.__path__)[0]) / "bin"
+        
+        if cublas_bin.exists():
+            os.add_dll_directory(str(cublas_bin))
+            print(f"Added nvidia-cublas DLL directory to search path: {cublas_bin}")
+        if cudnn_bin.exists():
+            os.add_dll_directory(str(cudnn_bin))
+            print(f"Added nvidia-cudnn DLL directory to search path: {cudnn_bin}")
+    except Exception as e:
+        print(f"Could not load custom nvidia DLL paths: {e}")
+
 from faster_whisper import WhisperModel
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -92,6 +115,7 @@ async def lifespan(app: FastAPI):
     monitor.start()
     yield
     monitor.stop()
+    load_monitor.stop()
 
 app = FastAPI(
     title="KIRA Server",
@@ -188,7 +212,19 @@ async def query_ollama(prompt: str, conversation_history: list[dict] | None = No
     # where we want phi3:mini to follow strict tool-calling formatting without being biased by conversational history.
     if conversation_history is None:
         # Phase 1: Tool-calling system prompt
-        current_date_str = datetime.now().strftime("%Y-%m-%d, %A")
+        now = datetime.now()
+        from datetime import timedelta
+        today_date_str = now.strftime("%Y-%m-%d")
+        today_day_str = now.strftime("%A")
+        tomorrow_date_str = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+        june_2_date_str = f"{now.year}-06-02"
+        
+        days_to_friday = (4 - now.weekday()) % 7
+        if days_to_friday == 0:
+            days_to_friday = 7
+        friday_date_str = (now + timedelta(days=days_to_friday)).strftime("%Y-%m-%d")
+        
+        current_date_str = now.strftime("%Y-%m-%d, %A")
         system_content = (
             "You are KIRA, a personal AI voice assistant.\n"
             f"Today's date is {current_date_str}.\n\n"
@@ -198,29 +234,35 @@ async def query_ollama(prompt: str, conversation_history: list[dict] | None = No
             "TOOL: add_reminder\n"
             "ARGS: {\"summary\": \"event name\", \"date\": \"YYYY-MM-DD\", \"time\": \"HH:MM\", \"duration_minutes\": 60}\n\n"
             "TOOL: get_schedule\n"
-            "ARGS: {\"date\": \"YYYY-MM-DD\"}\n\n"
+            "ARGS: {\"date\": \"YYYY-MM-DD\", \"query\": \"event name\"}\n\n"
             "TOOL: add_task\n"
             "ARGS: {\"summary\": \"task name\"}\n\n"
             "TOOL: mark_done\n"
             "ARGS: {\"keyword\": \"task name\"}\n\n"
             "TOOL: list_tasks\n"
-            "ARGS: {}\n\n"
-            "To schedule a reminder, resolve relative dates (like 'tomorrow', 'next Tuesday') or absolute dates (like '2nd of june') to the actual target date in YYYY-MM-DD format based on today's date.\n\n"
+            "ARGS: {\"keyword\": \"task name\"}\n\n"
+            "Rules for resolving dates:\n"
+            "1. To schedule a reminder, resolve relative dates (like 'tomorrow', 'next Tuesday') or absolute dates (like '2nd of june') to the actual target date in YYYY-MM-DD format based on today's date.\n"
+            "2. For keyword schedule searches (e.g., 'when is my X event', 'when do I have X'), do NOT include the 'date' argument unless a specific day is explicitly mentioned by the user.\n\n"
             "If no tool is needed, respond normally in plain conversational text.\n"
             "Rules for normal responses:\n"
             "1. Keep every reply to 1-2 sentences maximum. Never write paragraphs.\n"
             "2. No bullet points, no lists, no markdown — plain spoken English only.\n"
             "3. Be casual and friendly. No fillers.\n\n"
-            "Examples (assume today is Wednesday, 2026-05-27):\n"
-            "- \"remind me about standup tomorrow at 9\" -> TOOL: add_reminder\nARGS: {\"summary\": \"Standup\", \"date\": \"2026-05-28\", \"time\": \"09:00\", \"duration_minutes\": 60}\n"
-            "- \"test on 2nd of june at 3pm\" -> TOOL: add_reminder\nARGS: {\"summary\": \"Test\", \"date\": \"2026-06-02\", \"time\": \"15:00\", \"duration_minutes\": 60}\n"
-            "- \"what's on my calendar\" -> TOOL: get_schedule\n"
-            "- \"what is my schedule today\" -> TOOL: get_schedule\nARGS: {\"date\": \"2026-05-27\"}\n"
-            "- \"what is my schedule tomorrow\" -> TOOL: get_schedule\nARGS: {\"date\": \"2026-05-28\"}\n"
-            "- \"do i have anything on Friday\" -> TOOL: get_schedule\nARGS: {\"date\": \"2026-05-29\"}\n"
+            f"Examples (assume today is {today_day_str}, {today_date_str}):\n"
+            f"- \"remind me about standup tomorrow at 9\" -> TOOL: add_reminder\nARGS: {{\"summary\": \"Standup\", \"date\": \"{tomorrow_date_str}\", \"time\": \"09:00\", \"duration_minutes\": 60}}\n"
+            f"- \"test on 2nd of june at 3pm\" -> TOOL: add_reminder\nARGS: {{\"summary\": \"Test\", \"date\": \"{june_2_date_str}\", \"time\": \"15:00\", \"duration_minutes\": 60}}\n"
+            "- \"what's on my calendar\" -> TOOL: get_schedule\nARGS: {}\n"
+            "- \"when do I have test scheduled on\" -> TOOL: get_schedule\nARGS: {\"query\": \"test\"}\n"
+            "- \"when is my gym event scheduled\" -> TOOL: get_schedule\nARGS: {\"query\": \"gym\"}\n"
+            f"- \"what is my schedule today\" -> TOOL: get_schedule\nARGS: {{\"date\": \"{today_date_str}\"}}\n"
+            f"- \"what is my schedule tomorrow\" -> TOOL: get_schedule\nARGS: {{\"date\": \"{tomorrow_date_str}\"}}\n"
+            f"- \"do i have anything on Friday\" -> TOOL: get_schedule\nARGS: {{\"date\": \"{friday_date_str}\"}}\n"
             "- \"I need to buy milk\" -> TOOL: add_task\nARGS: {\"summary\": \"Buy milk\"}\n"
             "- \"finished buying milk\" -> TOOL: mark_done\nARGS: {\"keyword\": \"buy milk\"}\n"
             "- \"what are my tasks\" -> TOOL: list_tasks\nARGS: {}\n"
+            "- \"when do I have task buy milk scheduled\" -> TOOL: list_tasks\nARGS: {\"keyword\": \"buy milk\"}\n"
+            "- \"when is my homework task scheduled\" -> TOOL: list_tasks\nARGS: {\"keyword\": \"homework\"}\n"
             "- \"what is python\" -> Python is a high-level programming language."
         )
     else:
@@ -490,7 +532,52 @@ def parse_and_run_tool(response_text: str, user_message: str, session_id: str | 
     # 2. get_schedule
     elif tool_name == "get_schedule":
         date_val = args.get("date")
-        return get_schedule(date_str=date_val)
+        query_val = args.get("query")
+        
+        # Guardrail: If the LLM mistakenly routed a task query to get_schedule
+        if "task" in user_message.lower():
+            if not session_id:
+                return "I cannot list tasks without a valid session."
+            log.info(f"[Tool Calling] Redirecting task-related query from get_schedule to list_tasks: '{user_message}'")
+            keyword = query_val or args.get("query")
+            if not keyword or keyword in ["today", "tomorrow", "yesterday", "friday", "sunday", "monday", "tuesday", "wednesday", "thursday", "saturday"]:
+                keyword = None
+            msg_lower = user_message.lower().strip()
+            for pattern in [
+                r"when do i have task\s+(.+?)\s+scheduled",
+                r"when is my task\s+(.+?)\s+scheduled",
+                r"when is the task\s+(.+?)\s+scheduled",
+                r"when is\s+(.+?)\s+task scheduled",
+                r"when is my\s+(.+?)\s+task scheduled",
+                r"when is the\s+(.+?)\s+task scheduled",
+                r"when do i have\s+(.+?)\s+scheduled",
+                r"when is\s+(.+?)\s+scheduled",
+                r"when is my\s+(.+?)\s+task",
+                r"when is the\s+(.+?)\s+task",
+                r"task\s+(.+?)\b",
+            ]:
+                match = re.search(pattern, msg_lower)
+                if match:
+                    potential = match.group(1).strip().strip("'\"")
+                    if potential not in ["my schedule", "my calendar", "tasks", "my tasks", "schedule", "calendar"]:
+                        keyword = potential
+                        break
+            return list_tasks(session_id, keyword=keyword)
+
+        # Check if the user message actually mentions a date/day of week/relative date
+        # to prevent Ollama from hallucinating/copying the current date into query searches.
+        if query_val:
+            date_keywords = ["today", "tomorrow", "yesterday", "monday", "tuesday", "wednesday", 
+                             "thursday", "friday", "saturday", "sunday", "january", "february", 
+                             "march", "april", "may", "june", "july", "august", "september", 
+                             "october", "november", "december", "jan", "feb", "mar", "apr", "jun", 
+                             "jul", "aug", "sep", "oct", "nov", "dec", "this week", "next week"]
+            has_date_mention = any(k in user_message.lower() for k in date_keywords) or re.search(r'\b\d{1,2}(?:st|nd|rd|th)?\b', user_message)
+            if not has_date_mention:
+                log.info(f"[Tool Calling] Overriding hallucinated date constraint for query search: '{date_val}' -> None")
+                date_val = None
+
+        return get_schedule(date_str=date_val, query=query_val)
 
     # 3. add_task
     elif tool_name == "add_task":
@@ -514,7 +601,32 @@ def parse_and_run_tool(response_text: str, user_message: str, session_id: str | 
     elif tool_name == "list_tasks":
         if not session_id:
             return "I cannot list tasks without a valid session."
-        return list_tasks(session_id)
+        keyword = args.get("keyword")
+        
+        # If the LLM failed to extract a keyword, but the user was clearly asking about a specific task
+        if not keyword:
+            msg_lower = user_message.lower().strip()
+            # Clean up common phrasing to isolate the task keyword
+            for pattern in [
+                r"when do i have task\s+(.+?)\s+scheduled",
+                r"when is my task\s+(.+?)\s+scheduled",
+                r"when is the task\s+(.+?)\s+scheduled",
+                r"when is\s+(.+?)\s+task scheduled",
+                r"when is my\s+(.+?)\s+task scheduled",
+                r"when is the\s+(.+?)\s+task scheduled",
+                r"when do i have\s+(.+?)\s+scheduled",
+                r"when is\s+(.+?)\s+scheduled",
+                r"when is my\s+(.+?)\s+task",
+                r"when is the\s+(.+?)\s+task",
+            ]:
+                match = re.search(pattern, msg_lower)
+                if match:
+                    potential = match.group(1).strip().strip("'\"")
+                    if potential not in ["my schedule", "my calendar", "tasks", "my tasks", "schedule", "calendar"]:
+                        keyword = potential
+                        log.info(f"[Tool Calling] Regex extracted task keyword from user message: '{keyword}'")
+                        break
+        return list_tasks(session_id, keyword=keyword)
 
     log.warning(f"Unknown tool requested: {tool_name}")
     return None

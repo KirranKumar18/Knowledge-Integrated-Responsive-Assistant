@@ -18,32 +18,32 @@ import httpx
 
 def check_ollama():
     """Verify Ollama is running and phi3:mini is downloaded."""
-    print("🔍 Checking Ollama...")
+    print("[Search] Checking Ollama...")
     try:
         resp = httpx.get("http://localhost:11434/api/tags", timeout=5)
         if resp.status_code == 200:
             models = [m["name"] for m in resp.json().get("models", [])]
-            print(f"   ✅ Ollama is running | Models: {', '.join(models)}")
+            print(f"   [OK] Ollama is running | Models: {', '.join(models)}")
 
             # Check if phi3:mini is available
             has_phi3 = any("phi3" in m for m in models)
             if not has_phi3:
-                print("   ⚠️  phi3:mini not found. Pulling it now...")
+                print("   [Warning] phi3:mini not found. Pulling it now...")
                 subprocess.run(["ollama", "pull", "phi3:mini"], check=True)
-                print("   ✅ phi3:mini downloaded")
+                print("   [OK] phi3:mini downloaded")
             return True
         else:
-            print(f"   ❌ Ollama responded with {resp.status_code}")
+            print(f"   [Error] Ollama responded with {resp.status_code}")
             return False
     except httpx.ConnectError:
-        print("   ❌ Ollama is not running")
+        print("   [Error] Ollama is not running")
         print("   Start it with: ollama serve")
         return False
 
 
 def start_ngrok():
     """Start an ngrok tunnel on port 8000 and return the public URL."""
-    print("\n🌐 Starting ngrok tunnel...")
+    print("\n[Network] Starting ngrok tunnel...")
     try:
         # Start ngrok in background
         proc = subprocess.Popen(
@@ -62,19 +62,19 @@ def start_ngrok():
             for tunnel in tunnels:
                 if tunnel.get("proto") == "https":
                     url = tunnel["public_url"]
-                    print(f"   ✅ Ngrok tunnel: {url}")
-                    print(f"\n   📱 On your phone, run:")
+                    print(f"   [OK] Ngrok tunnel: {url}")
+                    print(f"\n   [Mobile] On your phone, run:")
                     print(f"      python client.py --server {url}")
                     return url, proc
         except Exception:
             pass
 
-        print("   ⚠️  Couldn't get ngrok URL automatically.")
+        print("   [Warning] Couldn't get ngrok URL automatically.")
         print("   Check http://localhost:4040 for the URL.")
         return None, proc
 
     except FileNotFoundError:
-        print("   ⚠️  ngrok is not installed")
+        print("   [Warning] ngrok is not installed")
         print("   Install: https://ngrok.com/download")
         print("   Or use the server on local network: http://<laptop-ip>:8000")
         return None, None
@@ -82,19 +82,19 @@ def start_ngrok():
 
 def main():
     print("\n" + "=" * 50)
-    print("  🤖 KIRA Server Launcher — Phase 1")
+    print("  KIRA Server Launcher - Phase 1")
     print("=" * 50 + "\n")
 
     # Step 1: Check Ollama
     if not check_ollama():
-        print("\n❌ Cannot start without Ollama. Exiting.")
+        print("\n[Error] Cannot start without Ollama. Exiting.")
         sys.exit(1)
 
     # Step 2: Start ngrok (optional but recommended)
     ngrok_url, ngrok_proc = start_ngrok()
 
     # Step 3: Start the FastAPI server
-    print("\n🚀 Starting KIRA server on port 8000...")
+    print("\n[Server] Starting KIRA server on port 8000...")
     print("   Local:  http://localhost:8000")
     print("   Docs:   http://localhost:8000/docs")
     if ngrok_url:
@@ -109,7 +109,7 @@ def main():
             cwd=server_dir,
         )
     except KeyboardInterrupt:
-        print("\n\n🛑 Shutting down...")
+        print("\n\n[Stop] Shutting down...")
     finally:
         if ngrok_proc:
             ngrok_proc.terminate()

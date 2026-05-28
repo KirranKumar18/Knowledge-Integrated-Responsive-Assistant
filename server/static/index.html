@@ -403,11 +403,21 @@
             
             <div class="resource-row">
                 <div class="resource-info">
-                    <span class="resource-label">CPU Usage</span>
-                    <span class="resource-value" id="cpu-val">0%</span>
+                    <span class="resource-label" id="gpu-label">Dedicated GPU</span>
+                    <span class="resource-value" id="gpu-val">0%</span>
                 </div>
                 <div class="progress-bar-container">
-                    <div class="progress-bar" id="cpu-bar"></div>
+                    <div class="progress-bar" id="gpu-bar"></div>
+                </div>
+            </div>
+
+            <div class="resource-row">
+                <div class="resource-info">
+                    <span class="resource-label" id="igpu-label">Integrated GPU</span>
+                    <span class="resource-value" id="igpu-val">0%</span>
+                </div>
+                <div class="progress-bar-container">
+                    <div class="progress-bar" id="igpu-bar"></div>
                 </div>
             </div>
 
@@ -566,7 +576,10 @@
                 const data = await response.json();
 
                 // Update system resource levels
-                updateProgressBar('cpu-bar', 'cpu-val', data.system.cpu_percent);
+                document.getElementById('gpu-label').innerText = data.system.gpu_name || 'Dedicated GPU';
+                document.getElementById('igpu-label').innerText = data.system.igpu_name || 'Integrated GPU';
+                updateProgressBar('gpu-bar', 'gpu-val', data.system.gpu_percent);
+                updateProgressBar('igpu-bar', 'igpu-val', data.system.igpu_percent);
                 updateProgressBar('mem-bar', 'mem-val', data.system.memory_percent);
 
                 // Update active requests
@@ -632,10 +645,10 @@
 
             let showAlert = false;
             
-            // 1. High CPU Load
-            if (data.system.cpu_percent > 85) {
-                tipsHeader.innerText = "System Overloaded: High CPU Usage";
-                tipsDesc.innerText = "CPU usage is extremely high. Close background apps on your laptop to speed up Whisper/Ollama.";
+            // 1. High GPU Load
+            if (data.system.gpu_percent > 85) {
+                tipsHeader.innerText = "System Overloaded: High GPU Usage";
+                tipsDesc.innerText = "Dedicated GPU load is extremely high. Close other GPU-intensive apps to speed up Whisper/Ollama.";
                 showAlert = true;
             }
             // 2. High Whisper Latency (Suggesting smaller model)
