@@ -1,12 +1,9 @@
 """
-task_reminder.py — KIRA Phase 3
-In-memory hourly task reminder engine.
+task_reminder.py — KIRA Phase 6
+SQLite-backed hourly task reminder engine.
 
 When the user says something like "I need to finish my homework today",
 KIRA stores the task and reminds them every 1 hour until they say it's done.
-
-Tasks are in-memory only — they persist for the server's lifetime but are
-lost on restart (consistent with how session history works).
 """
 
 import time
@@ -18,13 +15,21 @@ log = logging.getLogger("kira-server.tasks")
 # How often (in seconds) to nag the user about a pending task
 REMINDER_INTERVAL = 30  # 30 seconds
 
-
 # ---------------------------------------------------------------------------
-# In-memory task store
+# Task store backed by database
 # ---------------------------------------------------------------------------
-# Structure: {session_id: [Task, Task, ...]}
-# Each Task is a dict with: summary, created_at, last_reminded_at
 _tasks: dict[str, list[dict]] = {}
+
+def init_tasks_from_db():
+    global _tasks
+    try:
+        from services.database import load_pending_tasks
+        _tasks = load_pending_tasks()
+    except Exception as e:
+        log.warning(f"Could not load tasks from database: {e}")
+
+# Load pending tasks at startup
+init_tasks_from_db()
 
 
 def add_task(session_id: str, summary: str) -> str:
@@ -69,6 +74,12 @@ def add_task(session_id: str, summary: str) -> str:
                 "created_at": now,
                 "last_reminded_at": now,  # don't nag immediately — first reminder after 30s
             })
+            # Persist to database
+            try:
+                from services.database import save_task
+                save_task(session_id, part, now, now)
+            except Exception as db_err:
+                log.error(f"Failed to persist task to DB: {db_err}")
             added_summaries.append(part)
             log.info(f"[Tasks] Added for {session_id[:8]}...: '{part}'")
 
@@ -108,6 +119,11 @@ def get_pending_reminders(session_id: str) -> list[str]:
         if elapsed >= REMINDER_INTERVAL:
             due.append(f"Reminder: you still need to {task['summary'].lower()}.")
             task["last_reminded_at"] = now  # reset the clock
+            try:
+                from services.database import update_task_reminded
+                update_task_reminded(session_id, task["summary"], now)
+            except Exception:
+                pass
             log.info(f"[Tasks] Reminded {session_id[:8]}... about: '{task['summary']}'")
 
     return due
@@ -149,6 +165,11 @@ def get_all_pending_reminders(session_id: Optional[str] = None) -> list[str]:
             # Reset last_reminded_at for ALL tasks in this session so they stay in sync
             for task in task_list:
                 task["last_reminded_at"] = now
+                try:
+                    from services.database import update_task_reminded
+                    update_task_reminded(sid, task["summary"], now)
+                except Exception:
+                    pass
             log.info(f"[Tasks] Reminded session {sid[:8]}...: {count} pending tasks.")
 
     return due
@@ -171,6 +192,11 @@ def mark_done(session_id: str, keyword: str) -> str:
     for i, task in enumerate(_tasks[session_id]):
         if keyword_lower in task["summary"].lower() or task["summary"].lower() in keyword_lower:
             removed = _tasks[session_id].pop(i)
+            try:
+                from services.database import complete_task
+                complete_task(session_id, removed["summary"])
+            except Exception as db_err:
+                log.error(f"Failed to complete task in DB: {db_err}")
             log.info(f"[Tasks] Completed for {session_id[:8]}...: '{removed['summary']}'")
             if not _tasks[session_id]:
                 del _tasks[session_id]
@@ -179,6 +205,11 @@ def mark_done(session_id: str, keyword: str) -> str:
     # 2. Fallback 1: If there is only one task, assume the user is referring to it
     if len(_tasks[session_id]) == 1:
         removed = _tasks[session_id].pop(0)
+        try:
+            from services.database import complete_task
+            complete_task(session_id, removed["summary"])
+        except Exception as db_err:
+            log.error(f"Failed to complete task in DB: {db_err}")
         log.info(f"[Tasks] Completed single task via fallback for {session_id[:8]}...: '{removed['summary']}'")
         if not _tasks[session_id]:
             del _tasks[session_id]
@@ -204,6 +235,11 @@ def mark_done(session_id: str, keyword: str) -> str:
         
         if best_match_idx != -1 and max_overlap > 0:
             removed = _tasks[session_id].pop(best_match_idx)
+            try:
+                from services.database import complete_task
+                complete_task(session_id, removed["summary"])
+            except Exception as db_err:
+                log.error(f"Failed to complete task in DB: {db_err}")
             log.info(f"[Tasks] Completed task via token overlap match ({max_overlap} words) for {session_id[:8]}...: '{removed['summary']}'")
             if not _tasks[session_id]:
                 del _tasks[session_id]

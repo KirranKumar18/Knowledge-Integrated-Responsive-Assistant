@@ -74,7 +74,10 @@ from pydantic import BaseModel
 from handlers.gemini_handler import needs_gemini, query_gemini, is_gemini_available
 from handlers.calendar_handler import get_schedule, add_reminder
 from handlers.task_reminder import add_task, get_pending_reminders, mark_done, list_tasks, get_task_count, get_all_pending_reminders
+from handlers.knowledge_handler import search_web, search_github
 from services import monitor, load_monitor
+from services.database import save_chat_message, load_chat_history, clear_chat_history
+from services.dataset_logger import log_interaction
 from fastapi.responses import HTMLResponse, FileResponse
 
 # ---------------------------------------------------------------------------
@@ -164,7 +167,6 @@ except Exception as gpu_err:
 # ---------------------------------------------------------------------------
 # Phase 2: Session-based conversation memory
 # ---------------------------------------------------------------------------
-# In-memory store: {session_id: [{"role": "user", "content": "..."}, ...]}
 # Each session tracks the conversation so KIRA remembers what you said earlier.
 # Trimmed to MAX_HISTORY_MESSAGES to stay within phi3:mini's 4K context window.
 sessions: dict[str, list[dict]] = {}
@@ -174,28 +176,23 @@ def get_session_history(session_id: str | None) -> list[dict]:
     """Get conversation history for a session. Returns empty list if no session."""
     if not session_id:
         return []
-    return sessions.get(session_id, [])
+    return load_chat_history(session_id, limit=MAX_HISTORY_MESSAGES)
 
 
 def update_session(session_id: str | None, user_message: str, assistant_response: str):
     """
     Append a user-assistant exchange to the session history.
-    Trims to MAX_HISTORY_MESSAGES to prevent context overflow.
     """
     if not session_id:
         return
 
-    if session_id not in sessions:
-        sessions[session_id] = []
-        log.info(f"New session created: {session_id[:8]}...")
-
-    sessions[session_id].append({"role": "user", "content": user_message})
-    sessions[session_id].append({"role": "assistant", "content": assistant_response})
-
-    # Trim: keep only the last N messages
-    if len(sessions[session_id]) > MAX_HISTORY_MESSAGES:
-        sessions[session_id] = sessions[session_id][-MAX_HISTORY_MESSAGES:]
-        log.info(f"Session {session_id[:8]}... trimmed to {MAX_HISTORY_MESSAGES} messages")
+    # Save to SQLite database
+    save_chat_message(session_id, "user", user_message)
+    save_chat_message(session_id, "assistant", assistant_response)
+    
+    # Save to dataset for fine-tuning
+    log_interaction(user_prompt=user_message, assistant_response=assistant_response)
+    log.info(f"Session {session_id[:8]}... updated in database and dataset logger.")
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +238,10 @@ async def query_ollama(prompt: str, conversation_history: list[dict] | None = No
             "ARGS: {\"keyword\": \"task name\"}\n\n"
             "TOOL: list_tasks\n"
             "ARGS: {\"keyword\": \"task name\"}\n\n"
+            "TOOL: search_web\n"
+            "ARGS: {\"query\": \"search query\"}\n\n"
+            "TOOL: search_github\n"
+            "ARGS: {\"query\": \"search query\", \"language\": \"optional programming language\"}\n\n"
             "Rules for resolving dates:\n"
             "1. To schedule a reminder, resolve relative dates (like 'tomorrow', 'next Tuesday') or absolute dates (like '2nd of june') to the actual target date in YYYY-MM-DD format based on today's date.\n"
             "2. For keyword schedule searches (e.g., 'when is my X event', 'when do I have X'), do NOT include the 'date' argument unless a specific day is explicitly mentioned by the user.\n\n"
@@ -263,6 +264,10 @@ async def query_ollama(prompt: str, conversation_history: list[dict] | None = No
             "- \"what are my tasks\" -> TOOL: list_tasks\nARGS: {}\n"
             "- \"when do I have task buy milk scheduled\" -> TOOL: list_tasks\nARGS: {\"keyword\": \"buy milk\"}\n"
             "- \"when is my homework task scheduled\" -> TOOL: list_tasks\nARGS: {\"keyword\": \"homework\"}\n"
+            "- \"search the web for the distance to the moon\" -> TOOL: search_web\nARGS: {\"query\": \"distance to the moon\"}\n"
+            "- \"find python tutorials on brave\" -> TOOL: search_web\nARGS: {\"query\": \"python tutorials\"}\n"
+            "- \"find a fastapi boilerplate repository on github\" -> TOOL: search_github\nARGS: {\"query\": \"fastapi boilerplate\"}\n"
+            "- \"find rust game engines on github\" -> TOOL: search_github\nARGS: {\"query\": \"game engine\", \"language\": \"rust\"}\n"
             "- \"what is python\" -> Python is a high-level programming language."
         )
     else:
@@ -474,7 +479,7 @@ def _parse_schedule_datetime(msg: str) -> tuple[str | None, float | None, int | 
     return summary, hours_from_now, duration_minutes
 
 
-def parse_and_run_tool(response_text: str, user_message: str, session_id: str | None) -> str | None:
+async def parse_and_run_tool(response_text: str, user_message: str, session_id: str | None) -> str | None:
     """
     Parse Ollama's response. If it contains a TOOL call, run it and return the result.
     Otherwise, return None.
@@ -628,6 +633,29 @@ def parse_and_run_tool(response_text: str, user_message: str, session_id: str | 
                         break
         return list_tasks(session_id, keyword=keyword)
 
+    # 6. search_web
+    elif tool_name == "search_web":
+        query = args.get("query")
+        if not query:
+            query = user_message
+            for prefix in ["search the web for", "search web for", "search for", "look up", "google"]:
+                if query.lower().startswith(prefix):
+                    query = query[len(prefix):].strip()
+                    break
+        return await search_web(query)
+
+    # 7. search_github
+    elif tool_name == "search_github":
+        query = args.get("query")
+        language = args.get("language")
+        if not query:
+            query = user_message
+            for prefix in ["find", "search github for", "search github repository for", "github search for"]:
+                if query.lower().startswith(prefix):
+                    query = query[len(prefix):].strip()
+                    break
+        return await search_github(query, language=language)
+
     log.warning(f"Unknown tool requested: {tool_name}")
     return None
 
@@ -720,7 +748,7 @@ async def chat_text(req: ChatRequest):
         ollama_time += (time.time() - t_ollama_1)
 
         # Check if the AI wants to call a tool
-        tool_result = parse_and_run_tool(ollama_response, req.message, req.session_id)
+        tool_result = await parse_and_run_tool(ollama_response, req.message, req.session_id)
         if tool_result is not None:
             response_text = tool_result
             intercepted = True
@@ -833,7 +861,7 @@ async def voice_chat(
         ollama_time += (time.time() - t_ollama_1)
 
         # Check if the AI wants to call a tool
-        tool_result = parse_and_run_tool(ollama_response, transcription, session_id)
+        tool_result = await parse_and_run_tool(ollama_response, transcription, session_id)
         if tool_result is not None:
             response_text = tool_result
             intercepted = True
@@ -994,13 +1022,11 @@ async def gemini_query(req: GeminiRequest):
 @app.get("/sessions/{session_id}")
 async def get_session(session_id: str):
     """View the conversation history for a specific session."""
-    if session_id not in sessions:
-        raise HTTPException(status_code=404, detail="Session not found")
-
+    history = load_chat_history(session_id)
     return {
         "session_id": session_id,
-        "message_count": len(sessions[session_id]),
-        "messages": sessions[session_id],
+        "message_count": len(history),
+        "messages": history,
     }
 
 
@@ -1010,12 +1036,11 @@ async def delete_session(session_id: str):
     Clear a session's conversation history.
     Use when the user says "forget this conversation" or "new conversation".
     """
+    clear_chat_history(session_id)
     if session_id in sessions:
         del sessions[session_id]
-        log.info(f"Session {session_id[:8]}... deleted")
-        return {"status": "deleted", "session_id": session_id}
-    else:
-        raise HTTPException(status_code=404, detail="Session not found")
+    log.info(f"Session {session_id[:8]}... deleted")
+    return {"status": "deleted", "session_id": session_id}
 
 
 # ---------------------------------------------------------------------------

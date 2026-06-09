@@ -32,6 +32,13 @@ import subprocess
 import argparse
 import requests
 
+# Reconfigure stdout to use UTF-8 on Windows to avoid UnicodeEncodeError for emojis
+if sys.platform.startswith("win"):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+
 # Phase 2: Import offline inference engine
 try:
     from offline import query_offline, is_offline_available, get_offline_status
@@ -39,13 +46,27 @@ try:
 except ImportError:
     OFFLINE_SUPPORTED = False
 
+# Phase 6: Import visual feedback animations
+try:
+    from visual_feedback import VisualFeedback
+    visualizer = VisualFeedback()
+except ImportError:
+    visualizer = None
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 CONFIG_FILE = os.path.expanduser("~/.kira_config.json")
 DEFAULT_SERVER = "http://localhost:8000"  # will be overridden with ngrok URL
 
-RECORDING_FILE = os.path.expanduser("~/kira_recording.m4a")  # .m4a = AAC in 3GP container, ffmpeg-compatible
+# Detect Termux vs Laptop/Desktop environment
+IS_TERMUX = os.path.exists("/data/data/com.termux") or os.environ.get("PREFIX") == "/data/data/com.termux/files/usr"
+
+if IS_TERMUX:
+    RECORDING_FILE = os.path.expanduser("~/kira_recording.m4a")
+else:
+    RECORDING_FILE = os.path.expanduser("~/kira_recording.wav")
+
 RECORDING_DURATION = 5  # seconds — how long to listen
 RECORDING_SAMPLE_RATE = 44100  # 44.1kHz — standard for AAC
 
@@ -91,49 +112,124 @@ def stop_tts():
         pass
 
 
+def play_audio_file(filepath: str) -> subprocess.Popen | None:
+    """
+    Play the audio file in a cross-platform way and return the subprocess.Popen handle.
+    """
+    try:
+        cfg = load_config()
+        voice_tempo = str(cfg.get("voice_tempo", 1.0))
+    except Exception:
+        voice_tempo = "1.0"
+
+    abs_path = os.path.abspath(filepath)
+
+    if os.name == "nt":  # Windows
+        # Play using PowerShell & Windows Media Player COM object
+        safe_path = abs_path.replace("'", "''")
+        ps_cmd = f"$m = New-Object -ComObject WMPlayer.OCX; $m.URL = '{safe_path}'; $m.controls.play(); while($m.playState -ne 1) {{ Start-Sleep -m 100 }}"
+        try:
+            proc = subprocess.Popen(
+                ["powershell", "-WindowStyle", "Hidden", "-Command", ps_cmd],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return proc
+        except Exception:
+            pass
+            
+    elif sys.platform == "darwin":  # macOS
+        try:
+            proc = subprocess.Popen(
+                ["afplay", abs_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return proc
+        except Exception:
+            pass
+            
+    else:  # Linux / Android (Termux)
+        try:
+            proc = subprocess.Popen(
+                ["termux-media-player", "play", abs_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return proc
+        except FileNotFoundError:
+            pass
+
+        try:
+            proc = subprocess.Popen(
+                ["play", "-q", abs_path, "tempo", voice_tempo],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return proc
+        except FileNotFoundError:
+            pass
+
+        for player in [["mpg123", "-q"], ["paplay"], ["aplay"]]:
+            try:
+                proc = subprocess.Popen(
+                    player + [abs_path],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                return proc
+            except FileNotFoundError:
+                continue
+                
+    return None
+
+
 def termux_tts_speak(text: str, block: bool = False):
     """
-    Speak text aloud using gTTS (Google's neural voice).
-    Requires: pip install gTTS && pkg install mpv
+    Speak text aloud using gTTS (Google's neural voice) with voice profile options.
+    Requires: gTTS. Falls back to cross-platform media players.
     """
     global _tts_proc
+
+    # Set state to speaking
+    if visualizer:
+        visualizer.set_state("speaking")
 
     def _speak():
         global _tts_proc
 
         try:
+            # Load voice profile parameters from config
+            cfg = load_config()
+            voice_tld = cfg.get("voice_tld", "com")       # com (US), co.uk (UK), ca (Canada), co.in (India)
+
             from gtts import gTTS
-            tts = gTTS(text=text, lang='en', tld='com') # tld='com' for standard US, 'co.uk' for British etc
+            tts = gTTS(text=text, lang='en', tld=voice_tld)
             
-            # Save to a temporary file
-            audio_file = os.path.expanduser("~/kira_response.mp3")
+            # Save to a unique temporary file to avoid permission/lock issues on Windows
+            import tempfile
+            audio_file = os.path.join(tempfile.gettempdir(), f"kira_response_{uuid.uuid4().hex}.mp3")
             tts.save(audio_file)
             
-            # Try to play with SoX (play) to increase speed in real-time
-            # tempo 1.25 makes it 25% faster without changing pitch
-            try:
-                _tts_proc = subprocess.Popen(
-                    ["play", "-q", audio_file, "tempo", "2.5"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-            except FileNotFoundError:
-                # Fallback to normal speed if SoX isn't installed
-                _tts_proc = subprocess.Popen(
-                    ["termux-media-player", "play", audio_file],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
+            _tts_proc = play_audio_file(audio_file)
+            if _tts_proc:
+                _tts_proc.wait()  # wait for audio playback to finish
+            else:
+                # Simulate speech time if playback failed
+                words = len(text.split())
+                sleep_time = max(1.0, words / 2.5)
+                time.sleep(sleep_time)
             
-            _tts_proc.wait()  # wait for audio playback to finish
             _tts_proc = None
-            return
 
         except Exception as e:
-            # Fallback if gTTS or mpv fails
+            # Fallback if gTTS fails
             print(f"\n[KIRA said] {text}")
             print(f"  (TTS failed: {e})")
             _tts_proc = None
+        finally:
+            if visualizer:
+                visualizer.set_state("idle")
 
     if block:
         _speak()
@@ -142,69 +238,125 @@ def termux_tts_speak(text: str, block: bool = False):
         t.start()
 
 
-
-
 is_recording = False
 
-def termux_record_audio(output_path: str, duration: int = RECORDING_DURATION):
+
+def record_audio(output_path: str, duration: int = RECORDING_DURATION) -> bool:
     """
-    Record audio from the microphone using Termux:API.
-    Records for `duration` seconds and saves to `output_path`.
+    Record audio from the microphone in a cross-platform way.
+    Tries Termux API, sounddevice, and pyaudio.
     """
     global is_recording
     is_recording = True
-    # Delete stale file first — prevents old recording from being sent if this one fails
+    if visualizer:
+        visualizer.set_state("listening")
+    # Delete stale file first
     if os.path.exists(output_path):
         os.remove(output_path)
 
     print(f"\n🎙️  Listening for {duration} seconds...")
 
+    # 1. Try Termux API first (Android)
     try:
-        # Start recording in background
         record_proc = subprocess.Popen(
             [
                 "termux-microphone-record",
                 "-f", output_path,
                 "-l", str(duration),
-                "-e", "aac",    # AAC encoder → proper .m4a/3GP file, ffmpeg-compatible
+                "-e", "aac",
                 "-r", str(RECORDING_SAMPLE_RATE),
             ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-
-        # Wait for recording duration + small buffer
         time.sleep(duration + 1)
-
-        # Stop recording
         subprocess.run(
             ["termux-microphone-record", "-q"],
             timeout=5,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-
         record_proc.wait(timeout=5)
-        time.sleep(0.8)  # give mic time to fully release before next recording
-
-        is_recording = False
+        time.sleep(0.8)
+        
         if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+            is_recording = False
+            if visualizer:
+                visualizer.set_state("idle")
             size_kb = os.path.getsize(output_path) / 1024
             print(f"✅ Recorded ({size_kb:.1f} KB)")
             return True
-        else:
-            print("❌ Recording failed — empty file")
-            return False
-
     except FileNotFoundError:
-        is_recording = False
-        print("❌ termux-microphone-record not found")
-        print("   Install it: pkg install termux-api")
-        return False
-    except Exception as e:
-        is_recording = False
-        print(f"❌ Recording error: {e}")
-        return False
+        pass
+
+    # 2. Try sounddevice python library (Laptop)
+    try:
+        import sounddevice as sd
+        import soundfile as sf
+        samplerate = 16000
+        recording = sd.rec(int(duration * samplerate), samplerate=samplerate, channels=1, dtype='int16')
+        sd.wait()
+        sf.write(output_path, recording, samplerate)
+        
+        if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+            is_recording = False
+            if visualizer:
+                visualizer.set_state("idle")
+            size_kb = os.path.getsize(output_path) / 1024
+            print(f"✅ Recorded ({size_kb:.1f} KB)")
+            return True
+    except (ImportError, Exception):
+        pass
+
+    # 3. Try pyaudio python library (Laptop)
+    try:
+        import pyaudio
+        import wave
+        
+        chunk = 1024
+        sample_format = pyaudio.paInt16
+        channels = 1
+        fs = 16000
+        
+        p = pyaudio.PyAudio()
+        stream = p.open(format=sample_format,
+                        channels=channels,
+                        rate=fs,
+                        frames_per_buffer=chunk,
+                        input=True)
+        
+        frames = []
+        for _ in range(0, int(fs / chunk * duration)):
+            data = stream.read(chunk)
+            frames.append(data)
+            
+        stream.stop_stream()
+        stream.close()
+        p.terminate()
+        
+        wf = wave.open(output_path, 'wb')
+        wf.setnchannels(channels)
+        wf.setsampwidth(p.get_sample_size(sample_format))
+        wf.setframerate(fs)
+        wf.writeframes(b''.join(frames))
+        wf.close()
+        
+        if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+            is_recording = False
+            if visualizer:
+                visualizer.set_state("idle")
+            size_kb = os.path.getsize(output_path) / 1024
+            print(f"✅ Recorded ({size_kb:.1f} KB)")
+            return True
+    except (ImportError, Exception):
+        pass
+
+    is_recording = False
+    if visualizer:
+        visualizer.set_state("idle")
+    print("❌ Microphone recording is not supported on this platform without dependencies.")
+    print("   (Please install 'sounddevice' and 'soundfile' or run in Termux on Android)")
+    return False
 
 
 def termux_vibrate(duration_ms: int = 100):
@@ -395,8 +547,16 @@ def handle_gemini_permission(
         print("\n🎙️  Say 'yes' or 'no'...")
         termux_vibrate(100)
 
-        if not termux_record_audio(RECORDING_FILE, duration=5):
-            print("   Didn't catch that — sticking with the original answer.")
+        if not record_audio(RECORDING_FILE, duration=5):
+            # Fallback to text confirmation if recording is unsupported/fails
+            print("\n⚠️ Microphone failed. Type 'yes' or 'no' instead:")
+            user_input = input("You (yes/no): ").strip().lower()
+            confirmed = user_input in GEMINI_CONFIRM_WORDS
+            # Skip sending voice file below if we already got confirmation
+            if confirmed:
+                gemini_result = request_gemini(server_url, original_prompt, session_id)
+                if gemini_result:
+                    return gemini_result.get("response")
             return None
 
         # Send the short recording to the server for transcription
@@ -494,6 +654,10 @@ def conversation_loop(server_url: str, text_mode: bool = False):
     termux_toast("KIRA is ready")
     termux_tts_speak("KIRA is online and ready.")
 
+    if visualizer:
+        visualizer.start()
+        visualizer.set_state("idle")
+
     # Start background alerts polling thread
     poll_thread = threading.Thread(
         target=alerts_poll_loop,
@@ -533,6 +697,8 @@ def conversation_loop(server_url: str, text_mode: bool = False):
                 if not message:
                     continue
                 if message.lower() in ("exit", "quit", "bye"):
+                    if visualizer:
+                        visualizer.stop()
                     termux_tts_speak("Goodbye!")
                     print("👋 KIRA signing off.")
                     break
@@ -544,9 +710,11 @@ def conversation_loop(server_url: str, text_mode: bool = False):
                     termux_tts_speak("Starting a fresh conversation.")
                     continue
 
-
                 user_prompt = message
                 result = None
+
+                if visualizer:
+                    visualizer.set_state("processing")
 
                 if mode == "online":
                     result = send_text(server_url, message, session_id)
@@ -557,35 +725,87 @@ def conversation_loop(server_url: str, text_mode: bool = False):
                         result = {"response": offline_response, "model": "offline"}
 
             else:
-                # Voice mode — the real deal
+                # Voice mode — with hybrid text typing option
                 print("\n" + "-" * 30)
-                input("Press Enter to speak (or Ctrl+C to exit)...")
+                user_typed = input("Press Enter to speak, or type your message (or Ctrl+C to exit): ").strip()
                 stop_tts()       # ← kill KIRA's speech so mic doesn't pick it up
-                termux_vibrate(150)  # haptic feedback: I'm listening
-
-                if not termux_record_audio(RECORDING_FILE):
-                    print("Try again...")
+                
+                # Check if user typed exit commands
+                if user_typed.lower() in ("exit", "quit", "bye"):
+                    if visualizer:
+                        visualizer.stop()
+                    termux_tts_speak("Goodbye!")
+                    print("👋 KIRA signing off.")
+                    break
+                    
+                # Reset session command
+                if user_typed.lower() in ("new", "new conversation", "reset", "forget"):
+                    session_state["id"] = str(uuid.uuid4())
+                    session_id = session_state["id"]
+                    print(f"🔄 New session: {session_id[:8]}...")
+                    termux_tts_speak("Starting a fresh conversation.")
                     continue
 
-                user_prompt = None  # will be set from transcription
-
-                if mode == "online":
-                    result = send_voice(server_url, RECORDING_FILE, session_id)
-                    if result:
-                        user_prompt = result.get("transcription")
-                else:
-                    # Offline: we can't easily transcribe locally (no Whisper on phone)
-                    # For now, fall back to text input in offline voice mode
-                    print("⚠️  Voice transcription requires the server.")
-                    print("   Type your message instead:")
-                    user_prompt = input("   You: ").strip()
-                    if not user_prompt:
-                        continue
-                    offline_response = handle_offline_turn(user_prompt)
-                    if offline_response:
-                        result = {"response": offline_response, "model": "offline"}
+                if user_typed:
+                    # User typed a text message instead of just pressing Enter!
+                    user_prompt = user_typed
+                    if visualizer:
+                        visualizer.set_state("processing")
+                    if mode == "online":
+                        result = send_text(server_url, user_typed, session_id)
                     else:
-                        result = None
+                        offline_response = handle_offline_turn(user_typed)
+                        if offline_response:
+                            result = {"response": offline_response, "model": "offline"}
+                        else:
+                            result = None
+                else:
+                    # User just pressed Enter -> record voice!
+                    termux_vibrate(150)  # haptic feedback: I'm listening
+
+                    if not record_audio(RECORDING_FILE):
+                        # Fallback to text input in voice mode if microphone fails
+                        print("\n⚠️ Falling back to text input.")
+                        user_prompt = input("You: ").strip()
+                        if not user_prompt:
+                            continue
+                        if visualizer:
+                            visualizer.set_state("processing")
+                        if mode == "online":
+                            result = send_text(server_url, user_prompt, session_id)
+                        else:
+                            offline_response = handle_offline_turn(user_prompt)
+                            if offline_response:
+                                result = {"response": offline_response, "model": "offline"}
+                            else:
+                                result = None
+                    else:
+                        user_prompt = None  # will be set from transcription
+
+                        if visualizer:
+                            visualizer.set_state("processing")
+
+                        if mode == "online":
+                            result = send_voice(server_url, RECORDING_FILE, session_id)
+                            if result:
+                                user_prompt = result.get("transcription")
+                        else:
+                            # Offline: we can't easily transcribe locally (no Whisper on phone)
+                            # For now, fall back to text input in offline voice mode
+                            print("⚠️  Voice transcription requires the server.")
+                            print("   Type your message instead:")
+                            user_prompt = input("   You: ").strip()
+                            if not user_prompt:
+                                if visualizer:
+                                    visualizer.set_state("idle")
+                                continue
+                            if visualizer:
+                                visualizer.set_state("processing")
+                            offline_response = handle_offline_turn(user_prompt)
+                            if offline_response:
+                                result = {"response": offline_response, "model": "offline"}
+                            else:
+                                result = None
 
             # ── Process the response ────────────────────────────────────
 
@@ -619,7 +839,13 @@ def conversation_loop(server_url: str, text_mode: bool = False):
             else:
                 termux_tts_speak("Sorry, I couldn't process that.")
 
+            # Make sure we return to idle when loop completes a turn
+            if visualizer:
+                visualizer.set_state("idle")
+
         except KeyboardInterrupt:
+            if visualizer:
+                visualizer.stop()
             print("\n\n👋 KIRA signing off.")
             termux_tts_speak("Goodbye!")
             break

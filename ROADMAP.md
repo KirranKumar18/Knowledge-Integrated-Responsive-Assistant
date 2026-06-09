@@ -2,7 +2,7 @@
 
 ## Build Phases
 
-### Phase 1 — Voice Pipeline (current phase)
+### Phase 1 — Voice Pipeline
 Get the phone talking to the laptop end to end:
 - FastAPI server on laptop serving phi3:mini responses
 - Ngrok tunnel exposing it publicly
@@ -12,15 +12,14 @@ Get the phone talking to the laptop end to end:
 ### Phase 2 — Connect the Brain
 - Proper conversation history (memory between turns)
 - Gemini permission gate
-- Offline mode switching    #stopped for now
+- Offline mode switching
 
-### Phase 3 — Productivity Tools    
-### SHOULD ADD CLIENT.PY AND DO TEST RUNS
-- Google Calendar API (reminders + schedule)  and when i say a task for the day kira should remain me every 1hr until its done
+### Phase 3 — Productivity Tools
+- Google Calendar API (reminders + schedule) and when i say a task for the day kira should remain me every 1hr until its done
 - Productivity monitor background process
 
-### Phase 4 — Knowledge Tools
-- Brave Search for study materials
+### Phase 4 — Knowledge Tools (current phase)
+- Serper.dev (Google Search) for study materials
 - GitHub repo search
 
 ### Phase 5 — Fine Tuning
@@ -37,10 +36,11 @@ Get the phone talking to the laptop end to end:
 
 ## Current Status
 - Phase 1: COMPLETE ✓ (voice pipeline working end-to-end)
-- Phase 2: IN PROGRESS — code written, testing needed
-  - Conversation memory (session-based) ✓
-  - Gemini permission gate ✓
-  - Offline mode switching ✓
+- Phase 2: COMPLETE ✓ (session memory, Gemini gate, offline mode)
+- Phase 3: COMPLETE ✓ (Google Calendar, task reminders, productivity monitor)
+- Phase 4: COMPLETE ✓ (Serper.dev Search, GitHub Search)
+- Phase 5: IN PROGRESS — data collection and training script setup
+- Phase 6: IN PROGRESS — session persistence, visual feedback, voice profiles
 - Ollama installed on laptop with phi3:mini downloaded and working
 - Termux installed on phone via F-Droid
 - Termux:API installed on phone
@@ -54,13 +54,13 @@ Get the phone talking to the laptop end to end:
 - Keep phone-side code lightweight — 4GB RAM limit
 - All calendar events go through Google Calendar API only
 - GitHub search uses public API only (no token needed for basic use)
-- Brave Search API key will be provided when needed
+- Serper.dev API key will be provided when needed
 
 ---
 
 ## How to help
 You are helping build JARVIS from scratch, phase by phase.
-We are currently on Phase 1.
+We are currently on Phase 4.
 Write clean, well-commented Python code.
 Always explain what each file does before writing it.
 When in doubt about a decision, ask before assuming.
