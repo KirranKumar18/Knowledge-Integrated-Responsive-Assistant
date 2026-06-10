@@ -228,6 +228,10 @@ async def query_ollama(prompt: str, conversation_history: list[dict] | None = No
             "You have access to these tools. When the user's request needs one, "
             "respond ONLY with the TOOL and ARGS block, and nothing else (no comments, notes, or extra text).\n"
             "Important: Keep task summaries and event names specific and exact. Do not generalize them (e.g., do not change 'buy milk' to 'Buy milk').\n\n"
+            "MULTI-TASK RULE: If the user asks for MULTIPLE things in one message (e.g., 'search X and schedule Y'), "
+            "output MULTIPLE TOOL/ARGS blocks separated by a line containing only '---'. Example:\n"
+            "TOOL: search_github\nARGS: {\"query\": \"multi-agent\"}\n---\n"
+            f"TOOL: add_reminder\nARGS: {{\"summary\": \"Build\", \"date\": \"{today_date_str}\", \"time\": \"16:00\", \"duration_minutes\": 60}}\n\n"
             "TOOL: add_reminder\n"
             "ARGS: {\"summary\": \"event name\", \"date\": \"YYYY-MM-DD\", \"time\": \"HH:MM\", \"duration_minutes\": 60}\n\n"
             "TOOL: get_schedule\n"
@@ -244,13 +248,15 @@ async def query_ollama(prompt: str, conversation_history: list[dict] | None = No
             "ARGS: {\"query\": \"search query\", \"language\": \"optional programming language\"}\n\n"
             "Rules for resolving dates:\n"
             "1. To schedule a reminder, resolve relative dates (like 'tomorrow', 'next Tuesday') or absolute dates (like '2nd of june') to the actual target date in YYYY-MM-DD format based on today's date.\n"
-            "2. For keyword schedule searches (e.g., 'when is my X event', 'when do I have X'), do NOT include the 'date' argument unless a specific day is explicitly mentioned by the user.\n\n"
+            f"2. 'today' ALWAYS means {today_date_str}. 'tomorrow' ALWAYS means {tomorrow_date_str}. When the user says 'today' or does not specify a day, use today's date ({today_date_str}).\n"
+            "3. For keyword schedule searches (e.g., 'when is my X event', 'when do I have X'), do NOT include the 'date' argument unless a specific day is explicitly mentioned by the user.\n\n"
             "If no tool is needed, respond normally in plain conversational text.\n"
             "Rules for normal responses:\n"
             "1. Keep every reply to 1-2 sentences maximum. Never write paragraphs.\n"
             "2. No bullet points, no lists, no markdown — plain spoken English only.\n"
             "3. Be casual and friendly. No fillers.\n\n"
             f"Examples (assume today is {today_day_str}, {today_date_str}):\n"
+            f"- \"i have a meeting today at 2pm\" -> TOOL: add_reminder\nARGS: {{\"summary\": \"Meeting\", \"date\": \"{today_date_str}\", \"time\": \"14:00\", \"duration_minutes\": 60}}\n"
             f"- \"remind me about standup tomorrow at 9\" -> TOOL: add_reminder\nARGS: {{\"summary\": \"Standup\", \"date\": \"{tomorrow_date_str}\", \"time\": \"09:00\", \"duration_minutes\": 60}}\n"
             f"- \"test on 2nd of june at 3pm\" -> TOOL: add_reminder\nARGS: {{\"summary\": \"Test\", \"date\": \"{june_2_date_str}\", \"time\": \"15:00\", \"duration_minutes\": 60}}\n"
             "- \"what's on my calendar\" -> TOOL: get_schedule\nARGS: {}\n"
@@ -268,6 +274,10 @@ async def query_ollama(prompt: str, conversation_history: list[dict] | None = No
             "- \"find python tutorials on brave\" -> TOOL: search_web\nARGS: {\"query\": \"python tutorials\"}\n"
             "- \"find a fastapi boilerplate repository on github\" -> TOOL: search_github\nARGS: {\"query\": \"fastapi boilerplate\"}\n"
             "- \"find rust game engines on github\" -> TOOL: search_github\nARGS: {\"query\": \"game engine\", \"language\": \"rust\"}\n"
+            "- \"search for multi-agent repos and schedule a build at 4pm\" ->\n"
+            f"TOOL: search_github\nARGS: {{\"query\": \"multi-agent\"}}\n---\nTOOL: add_reminder\nARGS: {{\"summary\": \"Build\", \"date\": \"{today_date_str}\", \"time\": \"16:00\", \"duration_minutes\": 60}}\n"
+            "- \"add a task to buy milk and search for python tutorials\" ->\n"
+            "TOOL: add_task\nARGS: {\"summary\": \"Buy milk\"}\n---\nTOOL: search_web\nARGS: {\"query\": \"python tutorials\"}\n"
             "- \"what is python\" -> Python is a high-level programming language."
         )
     else:
@@ -300,7 +310,7 @@ async def query_ollama(prompt: str, conversation_history: list[dict] | None = No
         "messages": messages,
         "stream": False,  # get the full response at once
         "options": {
-            "num_predict": 100,  # ~80 words max — enough to output JSON ARGS cleanly
+            "num_predict": 200 if conversation_history is None else 100,  # 200 for intent detection (multi-tool needs more tokens), 100 for conversation
             "temperature": 0.0 if conversation_history is None else 0.7,
         },
     }
@@ -479,29 +489,11 @@ def _parse_schedule_datetime(msg: str) -> tuple[str | None, float | None, int | 
     return summary, hours_from_now, duration_minutes
 
 
-async def parse_and_run_tool(response_text: str, user_message: str, session_id: str | None) -> str | None:
+async def _execute_single_tool(tool_name: str, args: dict, user_message: str, session_id: str | None) -> str | None:
     """
-    Parse Ollama's response. If it contains a TOOL call, run it and return the result.
-    Otherwise, return None.
+    Execute a single detected tool and return the result string.
+    This is the inner logic extracted from the old parse_and_run_tool.
     """
-    # Match TOOL: <name> and ARGS: <json>
-    tool_match = re.search(r'(?i)TOOL:\s*(\w+)', response_text)
-    if not tool_match:
-        return None
-
-    tool_name = tool_match.group(1).lower().strip()
-    
-    # Try to find ARGS: {...}
-    args_match = re.search(r'(?i)ARGS:\s*(\{.*?\})', response_text, re.DOTALL)
-    args = {}
-    if args_match:
-        try:
-            args = json.loads(args_match.group(1).strip())
-        except Exception as e:
-            log.warning(f"Failed to parse tool arguments JSON: {args_match.group(1)}. Error: {e}")
-
-    log.info(f"[Tool Calling] Detected tool: {tool_name} with args: {args}")
-
     # 1. add_reminder
     if tool_name == "add_reminder":
         summary = args.get("summary")
@@ -544,10 +536,24 @@ async def parse_and_run_tool(response_text: str, user_message: str, session_id: 
             if not session_id:
                 return "I cannot list tasks without a valid session."
             log.info(f"[Tool Calling] Redirecting task-related query from get_schedule to list_tasks: '{user_message}'")
+            msg_lower = user_message.lower().strip()
+            
+            # Generic task listing queries — no keyword needed
+            generic_patterns = [
+                r"^(?:any |what(?:'s| are| is) )?(?:my )?tasks?\s*(?:for |of )?(?:the |to)?(?:day|today|now)?\.?\??$",
+                r"(?:do i have|any|what are|list|show)\s+(?:any )?(?:my )?(?:pending )?tasks?",
+                r"task\s+for\s+the\s+day",
+            ]
+            is_generic = any(re.search(p, msg_lower) for p in generic_patterns)
+            
+            if is_generic:
+                log.info(f"[Tool Calling] Generic task listing query detected, listing all tasks.")
+                return list_tasks(session_id, keyword=None)
+            
+            # Specific task search — try to extract keyword
             keyword = query_val or args.get("query")
             if not keyword or keyword in ["today", "tomorrow", "yesterday", "friday", "sunday", "monday", "tuesday", "wednesday", "thursday", "saturday"]:
                 keyword = None
-            msg_lower = user_message.lower().strip()
             for pattern in [
                 r"when do i have task\s+(.+?)\s+scheduled",
                 r"when is my task\s+(.+?)\s+scheduled",
@@ -564,7 +570,7 @@ async def parse_and_run_tool(response_text: str, user_message: str, session_id: 
                 match = re.search(pattern, msg_lower)
                 if match:
                     potential = match.group(1).strip().strip("'\"")
-                    if potential not in ["my schedule", "my calendar", "tasks", "my tasks", "schedule", "calendar"]:
+                    if potential not in ["my schedule", "my calendar", "tasks", "my tasks", "schedule", "calendar", "for the day", "for today", "the day"]:
                         keyword = potential
                         break
             return list_tasks(session_id, keyword=keyword)
@@ -660,6 +666,53 @@ async def parse_and_run_tool(response_text: str, user_message: str, session_id: 
     return None
 
 
+async def parse_and_run_tools(response_text: str, user_message: str, session_id: str | None) -> str | None:
+    """
+    Parse Ollama's response for one or more TOOL calls.
+    Supports multi-tool output separated by '---'.
+    Returns combined results string, or None if no tools were found.
+    """
+    # Check if there's at least one TOOL call in the response
+    if not re.search(r'(?i)TOOL:\s*\w+', response_text):
+        return None
+
+    # Split on '---' delimiter to find multiple tool blocks
+    blocks = re.split(r'\n\s*---\s*\n', response_text)
+
+    results = []
+    for block in blocks:
+        tool_match = re.search(r'(?i)TOOL:\s*(\w+)', block)
+        if not tool_match:
+            continue
+
+        tool_name = tool_match.group(1).lower().strip()
+
+        # Try to find ARGS: {...} within this block
+        args_match = re.search(r'(?i)ARGS:\s*(\{.*?\})', block, re.DOTALL)
+        args = {}
+        if args_match:
+            try:
+                args = json.loads(args_match.group(1).strip())
+            except Exception as e:
+                log.warning(f"Failed to parse tool arguments JSON: {args_match.group(1)}. Error: {e}")
+
+        log.info(f"[Tool Calling] Detected tool: {tool_name} with args: {args}")
+
+        result = await _execute_single_tool(tool_name, args, user_message, session_id)
+        if result is not None:
+            results.append(result)
+
+    if results:
+        # Join multiple tool results with " Also, " for natural speech flow
+        combined = results[0]
+        for r in results[1:]:
+            combined += f" Also, {r}"
+        log.info(f"[Tool Calling] Combined {len(results)} tool results.")
+        return combined
+
+    return None
+
+
 def prepend_reminders(response_text: str, session_id: str | None) -> str:
     """
     Check for pending reminders. (Disabled in favor of background alerts).
@@ -748,7 +801,7 @@ async def chat_text(req: ChatRequest):
         ollama_time += (time.time() - t_ollama_1)
 
         # Check if the AI wants to call a tool
-        tool_result = await parse_and_run_tool(ollama_response, req.message, req.session_id)
+        tool_result = await parse_and_run_tools(ollama_response, req.message, req.session_id)
         if tool_result is not None:
             response_text = tool_result
             intercepted = True
@@ -861,7 +914,7 @@ async def voice_chat(
         ollama_time += (time.time() - t_ollama_1)
 
         # Check if the AI wants to call a tool
-        tool_result = await parse_and_run_tool(ollama_response, transcription, session_id)
+        tool_result = await parse_and_run_tools(ollama_response, transcription, session_id)
         if tool_result is not None:
             response_text = tool_result
             intercepted = True

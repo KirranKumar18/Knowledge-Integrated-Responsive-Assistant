@@ -82,7 +82,7 @@ def start_ngrok():
 
 def main():
     print("\n" + "=" * 50)
-    print("  KIRA Server Launcher - Phase 1")
+    print("  KIRA Server Launcher  👾")
     print("=" * 50 + "\n")
 
     # Step 1: Check Ollama

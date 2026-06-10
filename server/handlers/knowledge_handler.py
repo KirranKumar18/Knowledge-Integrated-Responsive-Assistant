@@ -138,6 +138,7 @@ async def search_github(query: str, language: str | None = None, max_results: in
                 repo_name = item.get("name", "")
                 stars = item.get("stargazers_count", 0)
                 description = item.get("description") or "No description available"
+                repo_url = item.get("html_url", f"https://github.com/{full_name}")
                 
                 ordinal = "First" if i == 0 else "Second" if i == 1 else "Third"
                 
@@ -148,7 +149,7 @@ async def search_github(query: str, language: str | None = None, max_results: in
                 if len(clean_description) > 120:
                     clean_description = clean_description[:117] + "..."
                 
-                spoken_parts.append(f"{ordinal}, {spoken_name} with {stars} stars. Description: {clean_description}.")
+                spoken_parts.append(f"{ordinal}, {spoken_name} with {stars} stars. Link: {repo_url}. Description: {clean_description}.")
 
             return " ".join(spoken_parts)
 

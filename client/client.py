@@ -602,6 +602,10 @@ def handle_offline_turn(prompt: str) -> str | None:
 # ---------------------------------------------------------------------------
 # Background active notifications loop
 # ---------------------------------------------------------------------------
+# Global flag to track when the user is at the input prompt
+_waiting_for_input = False
+_current_input_prompt = ""
+
 def alerts_poll_loop(server_url: str, session_state: dict):
     """Background loop to poll for productivity alerts and task reminders."""
     while True:
@@ -617,9 +621,25 @@ def alerts_poll_loop(server_url: str, session_state: dict):
                     for alert in alerts:
                         print(f"\n📢 [Notification] KIRA: {alert}")
                         termux_tts_speak(alert)
+                        # Reprint the input prompt if user was typing
+                        if _waiting_for_input and _current_input_prompt:
+                            print(_current_input_prompt, end="", flush=True)
         except Exception:
             pass
         time.sleep(2)
+
+
+def safe_input(prompt: str) -> str:
+    """Input wrapper that sets the _waiting_for_input flag so notifications can reprint the prompt."""
+    global _waiting_for_input, _current_input_prompt
+    _waiting_for_input = True
+    _current_input_prompt = prompt
+    try:
+        result = input(prompt)
+    finally:
+        _waiting_for_input = False
+        _current_input_prompt = ""
+    return result
 
 
 
@@ -693,7 +713,7 @@ def conversation_loop(server_url: str, text_mode: bool = False):
 
             if text_mode:
                 mode_tag = "offline" if mode == "offline" else "online"
-                message = input(f"\nYou [{mode_tag}]: ").strip()
+                message = safe_input(f"\nYou [{mode_tag}]: ").strip()
                 if not message:
                     continue
                 if message.lower() in ("exit", "quit", "bye"):
@@ -727,7 +747,7 @@ def conversation_loop(server_url: str, text_mode: bool = False):
             else:
                 # Voice mode — with hybrid text typing option
                 print("\n" + "-" * 30)
-                user_typed = input("Press Enter to speak, or type your message (or Ctrl+C to exit): ").strip()
+                user_typed = safe_input("Press Enter to speak, or type your message (or Ctrl+C to exit): ").strip()
                 stop_tts()       # ← kill KIRA's speech so mic doesn't pick it up
                 
                 # Check if user typed exit commands
@@ -766,7 +786,7 @@ def conversation_loop(server_url: str, text_mode: bool = False):
                     if not record_audio(RECORDING_FILE):
                         # Fallback to text input in voice mode if microphone fails
                         print("\n⚠️ Falling back to text input.")
-                        user_prompt = input("You: ").strip()
+                        user_prompt = safe_input("You: ").strip()
                         if not user_prompt:
                             continue
                         if visualizer:
@@ -794,7 +814,7 @@ def conversation_loop(server_url: str, text_mode: bool = False):
                             # For now, fall back to text input in offline voice mode
                             print("⚠️  Voice transcription requires the server.")
                             print("   Type your message instead:")
-                            user_prompt = input("   You: ").strip()
+                            user_prompt = safe_input("   You: ").strip()
                             if not user_prompt:
                                 if visualizer:
                                     visualizer.set_state("idle")
