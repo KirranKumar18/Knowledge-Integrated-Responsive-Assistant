@@ -725,20 +725,30 @@ def prepend_reminders(response_text: str, session_id: str | None) -> str:
 # Routes
 # ---------------------------------------------------------------------------
 
+# Cache Ollama status for 30s to prevent blocking the event loop on frequent client health checks
+_last_ollama_check_time = 0.0
+_ollama_ok_cache = False
+
+async def check_ollama_status() -> bool:
+    global _last_ollama_check_time, _ollama_ok_cache
+    now = time.time()
+    if now - _last_ollama_check_time > 30.0:
+        _last_ollama_check_time = now
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                r = await client.get(f"{OLLAMA_BASE_URL}/api/tags")
+                _ollama_ok_cache = (r.status_code == 200)
+        except Exception:
+            _ollama_ok_cache = False
+    return _ollama_ok_cache
+
 @app.get("/health")
 async def health_check():
     """
     Health check endpoint. The phone client pings this first to verify
     connectivity before sending any voice data.
     """
-    # Also check if Ollama is reachable
-    ollama_ok = False
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            r = await client.get(f"{OLLAMA_BASE_URL}/api/tags")
-            ollama_ok = r.status_code == 200
-    except Exception:
-        pass
+    ollama_ok = await check_ollama_status()
 
     return {
         "status": "online",
@@ -891,7 +901,9 @@ async def voice_chat(
         load_monitor.whisper_active = True
         t_whisper = time.time()
         try:
-            transcription = transcribe_audio(tmp_path)
+            import asyncio
+            loop = asyncio.get_running_loop()
+            transcription = await loop.run_in_executor(None, transcribe_audio, tmp_path)
         finally:
             whisper_time = time.time() - t_whisper
             load_monitor.whisper_active = False

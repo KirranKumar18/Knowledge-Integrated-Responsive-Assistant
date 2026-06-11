@@ -14,7 +14,7 @@ DB_PATH = Path(__file__).parent.parent / "config" / "kira.db"
 def init_db():
     """Initialize SQLite tables for session memory and task reminders."""
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = sqlite3.connect(str(DB_PATH), timeout=15.0)
     c = conn.cursor()
     
     # 1. Create sessions table
@@ -62,7 +62,7 @@ init_db()
 def save_chat_message(session_id: str, role: str, content: str):
     """Save a single chat message (user or assistant) to the database."""
     try:
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = sqlite3.connect(str(DB_PATH), timeout=15.0)
         c = conn.cursor()
         c.execute("INSERT OR IGNORE INTO sessions (session_id) VALUES (?)", (session_id,))
         c.execute("INSERT INTO messages (session_id, role, content) VALUES (?, ?, ?)", (session_id, role, content))
@@ -74,7 +74,7 @@ def save_chat_message(session_id: str, role: str, content: str):
 def load_chat_history(session_id: str, limit: int = 4) -> list[dict]:
     """Retrieve chat history for a session, sorted in chronological order."""
     try:
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = sqlite3.connect(str(DB_PATH), timeout=15.0)
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
         c.execute("""
@@ -92,7 +92,7 @@ def load_chat_history(session_id: str, limit: int = 4) -> list[dict]:
 def clear_chat_history(session_id: str):
     """Delete all message history associated with a session ID."""
     try:
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = sqlite3.connect(str(DB_PATH), timeout=15.0)
         c = conn.cursor()
         c.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
         c.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
@@ -108,7 +108,7 @@ def clear_chat_history(session_id: str):
 def save_task(session_id: str, summary: str, created_at: float, last_reminded_at: float):
     """Save a new pending task reminder to the database."""
     try:
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = sqlite3.connect(str(DB_PATH), timeout=15.0)
         c = conn.cursor()
         c.execute("""
             INSERT INTO tasks (session_id, summary, status, created_at, last_reminded_at)
@@ -123,7 +123,7 @@ def save_task(session_id: str, summary: str, created_at: float, last_reminded_at
 def update_task_reminded(session_id: str, summary: str, last_reminded_at: float):
     """Update the last reminded timestamp of a pending task."""
     try:
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = sqlite3.connect(str(DB_PATH), timeout=15.0)
         c = conn.cursor()
         c.execute("""
             UPDATE tasks SET last_reminded_at = ? 
@@ -137,7 +137,7 @@ def update_task_reminded(session_id: str, summary: str, last_reminded_at: float)
 def complete_task(session_id: str, summary: str):
     """Mark a pending task as done/completed in the database."""
     try:
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = sqlite3.connect(str(DB_PATH), timeout=15.0)
         c = conn.cursor()
         c.execute("""
             UPDATE tasks SET status = 'done' 
@@ -152,7 +152,7 @@ def complete_task(session_id: str, summary: str):
 def load_pending_tasks() -> dict[str, list[dict]]:
     """Load all pending tasks from SQLite to synchronize memory on server startup."""
     try:
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = sqlite3.connect(str(DB_PATH), timeout=15.0)
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
         c.execute("SELECT session_id, summary, created_at, last_reminded_at FROM tasks WHERE status = 'pending'")

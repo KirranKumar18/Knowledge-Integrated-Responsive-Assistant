@@ -31,6 +31,21 @@ import threading
 import subprocess
 import argparse
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
+
+# Create persistent HTTP sessions for connection reuse (HTTP Keep-Alive)
+# This prevents socket exhaustion on Android/Termux and respects ngrok connection limits.
+http_session = requests.Session()
+alerts_session = requests.Session()
+
+# Configure retries to handle transient glitches/ngrok connection drops gracefully
+retries = Retry(total=2, backoff_factor=0.1, status_forcelist=[500, 502, 503, 504])
+http_session.mount('http://', HTTPAdapter(max_retries=retries))
+http_session.mount('https://', HTTPAdapter(max_retries=retries))
+alerts_session.mount('http://', HTTPAdapter(max_retries=retries))
+alerts_session.mount('https://', HTTPAdapter(max_retries=retries))
+
 
 # Reconfigure stdout to use UTF-8 on Windows to avoid UnicodeEncodeError for emojis
 if sys.platform.startswith("win"):
@@ -394,7 +409,7 @@ def is_server_reachable(server_url: str) -> bool:
     Uses a short timeout so switching is fast.
     """
     try:
-        resp = requests.get(f"{server_url}/health", timeout=HEALTH_CHECK_TIMEOUT)
+        resp = http_session.get(f"{server_url}/health", timeout=HEALTH_CHECK_TIMEOUT)
         return resp.status_code == 200
     except (requests.ConnectionError, requests.Timeout):
         return False
@@ -406,7 +421,7 @@ def is_server_reachable(server_url: str) -> bool:
 def check_server(server_url: str) -> bool:
     """Ping the server health endpoint to verify connectivity (startup check)."""
     try:
-        resp = requests.get(f"{server_url}/health", timeout=10)
+        resp = http_session.get(f"{server_url}/health", timeout=10)
         if resp.status_code == 200:
             data = resp.json()
             print(f"✅ Server online | Model: {data.get('model')} | Ollama: {data.get('ollama')}")
@@ -441,7 +456,7 @@ def send_voice(server_url: str, audio_path: str, session_id: str | None = None) 
                 data["session_id"] = session_id
 
             print("📡 Sending to KIRA server...")
-            resp = requests.post(
+            resp = http_session.post(
                 f"{server_url}/voice",
                 files=files,
                 data=data,
@@ -475,7 +490,7 @@ def send_text(server_url: str, message: str, session_id: str | None = None) -> d
         if session_id:
             payload["session_id"] = session_id
 
-        resp = requests.post(
+        resp = http_session.post(
             f"{server_url}/chat",
             json=payload,
             timeout=120,
@@ -501,7 +516,7 @@ def request_gemini(server_url: str, prompt: str, session_id: str | None = None) 
             payload["session_id"] = session_id
 
         print("🧠 Asking Gemini...")
-        resp = requests.post(
+        resp = http_session.post(
             f"{server_url}/gemini",
             json=payload,
             timeout=120,
@@ -614,7 +629,7 @@ def alerts_poll_loop(server_url: str, session_state: dict):
                 params = {}
                 if "id" in session_state:
                     params["session_id"] = session_state["id"]
-                resp = requests.get(f"{server_url}/alerts", params=params, timeout=3)
+                resp = alerts_session.get(f"{server_url}/alerts", params=params, timeout=3)
                 if resp.status_code == 200:
                     data = resp.json()
                     alerts = data.get("alerts", [])
