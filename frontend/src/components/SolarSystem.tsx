@@ -11,6 +11,13 @@ interface SolarSystemProps {
   currentX: React.MutableRefObject<number>;
   currentY: React.MutableRefObject<number>;
   currentScale: React.MutableRefObject<number>;
+  
+  // Phase 3 voice integration props
+  isRecording: boolean;
+  amplitude: number;
+  onSunPress: () => void;
+  onSunRelease: () => void;
+  kiraLoading: boolean;
 }
 
 export const SolarSystem: React.FC<SolarSystemProps> = ({
@@ -21,6 +28,11 @@ export const SolarSystem: React.FC<SolarSystemProps> = ({
   currentX,
   currentY,
   currentScale,
+  isRecording,
+  amplitude,
+  onSunPress,
+  onSunRelease,
+  kiraLoading,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const starFieldRef = useRef<StarField | null>(null);
@@ -28,12 +40,13 @@ export const SolarSystem: React.FC<SolarSystemProps> = ({
   const elapsedFrames = useRef<number>(0);
   
   const [hoveredPlanetId, setHoveredPlanetId] = useState<string | null>(null);
+  const [isPressingSun, setIsPressingSun] = useState(false);
   const currentPositionsRef = useRef<Record<string, PlanetPosition>>({});
   const isFirstFrameRef = useRef<boolean>(true);
 
   const { updatePositions } = usePlanetOrbit();
 
-  // Handle keypresses (Escape to return to overview)
+  // Escape listener to zoom out
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -44,6 +57,7 @@ export const SolarSystem: React.FC<SolarSystemProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [resetToOverview]);
 
+  // Window resize handler
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -72,65 +86,70 @@ export const SolarSystem: React.FC<SolarSystemProps> = ({
       const centerX = width / 2;
       const centerY = height / 2;
 
-      // 1. Calculate target coordinates for the camera
+      // 1. Calculate camera target
       let targetX = centerX;
       let targetY = centerY;
-      let targetScale = 0.85; // Default overview scale (slightly zoomed out to fit saturn/jupiter)
+      let targetScale = 0.85;
 
-      // If we are focused on a planet, follow its coordinates in real time
       if (activePlanetId) {
         const activePlanetPos = currentPositionsRef.current[activePlanetId];
         if (activePlanetPos) {
           targetX = activePlanetPos.x;
           targetY = activePlanetPos.y;
-          
-          // Jupiter is massive, zoom out slightly more compared to smaller planets
           targetScale = activePlanetId === 'jupiter' ? 2.2 : 3.2;
         }
       }
 
-      // 2. Interpolate camera position
+      // 2. Easing camera updates
       const cam = updateCamera(targetX, targetY, targetScale, isFirstFrameRef.current);
       if (isFirstFrameRef.current) {
         isFirstFrameRef.current = false;
       }
 
-      // 3. Clear and draw space background
+      // 3. Draw background
       ctx.fillStyle = '#030508';
       ctx.fillRect(0, 0, width, height);
 
-      // 4. Draw Parallax Starfield (move stars inversely to camera coordinates)
+      // 4. Draw Parallax Stars
       if (starFieldRef.current) {
-        // Offset starts slightly to create movement depth
         const parallaxX = -cam.x;
         const parallaxY = -cam.y;
         starFieldRef.current.updateAndDraw(ctx, elapsedFrames.current, parallaxX, parallaxY);
       }
 
-      // 5. Apply Camera Transform
+      // 5. Apply Camera Matrix
       ctx.save();
-      // Apply translation to keep focus target in screen center
       ctx.translate(centerX, centerY);
       ctx.scale(cam.scale, cam.scale);
       ctx.translate(-cam.x, -cam.y);
 
-      // Draw ambient glow from Sun in world coordinates
+      // Deep space ambient radial glow
       const spaceGlow = ctx.createRadialGradient(
         centerX, centerY, 0,
         centerX, centerY, Math.max(width, height) * 0.7
       );
-      spaceGlow.addColorStop(0, 'rgba(253, 184, 19, 0.12)');
-      spaceGlow.addColorStop(0.4, 'rgba(13, 18, 30, 0.15)');
+      
+      // If KIRA is listening or thinking, shift the space glow to reflect activity
+      if (isRecording) {
+        spaceGlow.addColorStop(0, 'rgba(252, 196, 25, 0.25)'); // Intense amber glow
+        spaceGlow.addColorStop(0.4, 'rgba(253, 126, 20, 0.08)');
+      } else if (kiraLoading) {
+        spaceGlow.addColorStop(0, 'rgba(255, 255, 255, 0.2)'); // Pulsing white/cyan glow
+        spaceGlow.addColorStop(0.3, 'rgba(92, 124, 250, 0.08)');
+      } else {
+        spaceGlow.addColorStop(0, 'rgba(253, 184, 19, 0.12)');
+        spaceGlow.addColorStop(0.4, 'rgba(13, 18, 30, 0.15)');
+      }
       spaceGlow.addColorStop(1, 'rgba(3, 5, 8, 0)');
       ctx.fillStyle = spaceGlow;
       ctx.fillRect(-width * 2, -height * 2, width * 4, height * 4);
 
-      // 6. Draw Orbit Paths in World Space
+      // 6. Draw Orbit Paths
       ctx.save();
       for (const key of Object.keys(PLANET_MAP)) {
         const config = PLANET_MAP[key];
         ctx.strokeStyle = 'rgba(255, 255, 255, 0.03)';
-        ctx.lineWidth = 1 / cam.scale; // Maintain thin lines during zoom
+        ctx.lineWidth = 1 / cam.scale;
         ctx.setLineDash([4, 8]);
         ctx.beginPath();
         ctx.arc(centerX, centerY, config.orbitRadius, 0, Math.PI * 2);
@@ -138,39 +157,86 @@ export const SolarSystem: React.FC<SolarSystemProps> = ({
       }
       ctx.restore();
 
-      // Update positions for this frame
       const positions = updatePositions(centerX, centerY);
       currentPositionsRef.current = positions;
 
-      // 7. Draw Sun (Core AI)
+      // 7. Draw Sun (Core KIRA AI)
       ctx.save();
-      const sunPulse = Math.sin(elapsedFrames.current * 0.02) * 2.5;
-      const sunBaseSize = 42;
+      
+      // Calculations for Sun animation states
+      let sunPulse = Math.sin(elapsedFrames.current * 0.02) * 2.5;
+      let sunBaseSize = 42;
+      
+      // Listen State: Solar flare erupts outward based on volume
+      if (isRecording) {
+        sunPulse = Math.sin(elapsedFrames.current * 0.08) * 3 + amplitude * 18;
+      } 
+      // Thinking State: Rapid flickering corona, intense brightness
+      else if (kiraLoading) {
+        const flicker = Math.random() * 4 - 2;
+        sunPulse = Math.sin(elapsedFrames.current * 0.15) * 4.5 + flicker;
+      }
+      
       const sunSize = sunBaseSize + sunPulse;
 
-      // Outer Corona
+      // Draw real-time voice amplitude rings radiating from Sun surface
+      if (isRecording && amplitude > 0.05) {
+        ctx.save();
+        const numRings = 3;
+        for (let i = 0; i < numRings; i++) {
+          const ringRadius = sunSize + 15 + (i * 22) + (amplitude * 32);
+          const ringOpacity = Math.max(0.01, (0.4 - i * 0.12) * (1 - amplitude * 0.3));
+          
+          ctx.strokeStyle = 'rgba(252, 196, 25, 1)';
+          ctx.globalAlpha = ringOpacity;
+          ctx.lineWidth = 2 / cam.scale;
+          ctx.setLineDash([6, 12]);
+          ctx.beginPath();
+          // Radiating voice rings spin slowly
+          ctx.arc(centerX, centerY, ringRadius, elapsedFrames.current * 0.005 + (i * Math.PI / 3), elapsedFrames.current * 0.005 + (i * Math.PI / 3) + Math.PI * 2);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      // Pulsing Corona Halos
       const numCoronaLayers = 3;
       for (let i = 0; i < numCoronaLayers; i++) {
-        const layerPulse = Math.sin(elapsedFrames.current * (0.015 - i * 0.003)) * (6 - i * 2);
-        const radius = sunBaseSize + (i * 12) + layerPulse;
-        const opacity = (0.12 - i * 0.035) * (0.8 + Math.sin(elapsedFrames.current * 0.03) * 0.2);
+        let speedCoeff = 0.015 - i * 0.003;
+        let scaleCoeff = 6 - i * 2;
+        if (kiraLoading) {
+          speedCoeff *= 4; // Faster pulse during thinking
+          scaleCoeff *= 1.4;
+        }
         
-        ctx.fillStyle = 'rgba(255, 190, 40, 1)';
-        ctx.globalAlpha = Math.max(0.01, opacity);
+        const layerPulse = Math.sin(elapsedFrames.current * speedCoeff) * scaleCoeff;
+        const radius = sunBaseSize + (i * 12) + layerPulse;
+        let opacity = (0.12 - i * 0.035) * (0.8 + Math.sin(elapsedFrames.current * 0.03) * 0.2);
+        if (kiraLoading) opacity *= 1.6; // Brighter halo during thinking
+        
+        ctx.fillStyle = kiraLoading ? 'rgba(255, 236, 153, 1)' : 'rgba(255, 190, 40, 1)';
+        ctx.globalAlpha = Math.max(0.01, Math.min(0.9, opacity));
         ctx.beginPath();
         ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
         ctx.fill();
       }
 
-      // Core Gradient
+      // Sun Core Gradient
       const sunGrad = ctx.createRadialGradient(
         centerX, centerY, 0,
         centerX, centerY, sunSize
       );
-      sunGrad.addColorStop(0, '#ffffff');
-      sunGrad.addColorStop(0.25, '#fff9db');
-      sunGrad.addColorStop(0.75, '#fcc419');
-      sunGrad.addColorStop(1, 'rgba(230, 60, 0, 0.7)');
+      if (kiraLoading) {
+        sunGrad.addColorStop(0, '#ffffff');
+        sunGrad.addColorStop(0.3, '#fff9db');
+        sunGrad.addColorStop(0.8, '#ffd43b');
+        sunGrad.addColorStop(1, 'rgba(252, 196, 25, 0.95)'); // Intense blinding gold
+      } else {
+        sunGrad.addColorStop(0, '#ffffff');
+        sunGrad.addColorStop(0.25, '#fff9db');
+        sunGrad.addColorStop(0.75, '#fcc419');
+        sunGrad.addColorStop(1, 'rgba(230, 60, 0, 0.7)');
+      }
 
       ctx.globalAlpha = 1.0;
       ctx.fillStyle = sunGrad;
@@ -178,8 +244,8 @@ export const SolarSystem: React.FC<SolarSystemProps> = ({
       ctx.arc(centerX, centerY, sunSize, 0, Math.PI * 2);
       ctx.fill();
 
-      // Tech Ring
-      ctx.strokeStyle = 'rgba(255, 190, 40, 0.15)';
+      // Tech status ring
+      ctx.strokeStyle = isRecording ? 'rgba(252, 196, 25, 0.45)' : 'rgba(255, 190, 40, 0.15)';
       ctx.lineWidth = 1.2 / cam.scale;
       ctx.setLineDash([3, 12]);
       ctx.beginPath();
@@ -221,7 +287,7 @@ export const SolarSystem: React.FC<SolarSystemProps> = ({
 
         ctx.fillStyle = planetGrad;
         ctx.shadowColor = config.accentColor;
-        ctx.shadowBlur = 5 / cam.scale; // Scale shadow size with zoom
+        ctx.shadowBlur = 5 / cam.scale;
         ctx.beginPath();
         ctx.arc(pos.x, pos.y, config.size, 0, Math.PI * 2);
         ctx.fill();
@@ -243,7 +309,7 @@ export const SolarSystem: React.FC<SolarSystemProps> = ({
           drawEuropaHexGrid(ctx, pos.x, pos.y, config.size, elapsedFrames.current);
         }
 
-        // Render Hover ring indicator (Phase 2 dynamic UI)
+        // Hover Ring
         if (hoveredPlanetId === config.id && activePlanetId !== config.id) {
           ctx.strokeStyle = config.accentColor;
           ctx.lineWidth = 1.5 / cam.scale;
@@ -253,7 +319,7 @@ export const SolarSystem: React.FC<SolarSystemProps> = ({
           ctx.stroke();
         }
 
-        // Planet labels - render cleaner and hide when closely zoomed in
+        // Planet label
         if (activePlanetId !== config.id) {
           ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
           ctx.font = `${Math.max(10, Math.min(13, 11 / cam.scale))}px "Outfit"`;
@@ -277,10 +343,16 @@ export const SolarSystem: React.FC<SolarSystemProps> = ({
         cancelAnimationFrame(animationFrameId.current);
       }
     };
-  }, [updatePositions, activePlanetId, hoveredPlanetId, updateCamera]);
+  }, [updatePositions, activePlanetId, hoveredPlanetId, updateCamera, isRecording, amplitude, kiraLoading]);
 
   // Screen click hit testing
   const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    // If user clicked Sun, don't trigger planet routing
+    if (isPressingSun) {
+      setIsPressingSun(false);
+      return;
+    }
+
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
@@ -290,9 +362,17 @@ export const SolarSystem: React.FC<SolarSystemProps> = ({
     const centerX = canvas.width / 2;
     const centerY = canvas.height / 2;
 
-    // Inverse transform camera coordinates (s -> w)
     const wx = currentX.current + (sx - centerX) / currentScale.current;
     const wy = currentY.current + (sy - centerY) / currentScale.current;
+
+    // Check if clicked the Sun (overview coordinates)
+    const dxSun = wx - centerX;
+    const dySun = wy - centerY;
+    const sunDist = Math.sqrt(dxSun * dxSun + dySun * dySun);
+    if (sunDist <= 50) {
+      // Sun click is handled via mouse down/up triggers for voice recording
+      return;
+    }
 
     let clickedPlanetId: string | null = null;
 
@@ -305,7 +385,6 @@ export const SolarSystem: React.FC<SolarSystemProps> = ({
       const dy = wy - pos.y;
       const dist = Math.sqrt(dx * dx + dy * dy);
 
-      // Hitbox padding for comfort
       if (dist <= config.size * 1.8) {
         clickedPlanetId = config.id;
         break;
@@ -317,8 +396,8 @@ export const SolarSystem: React.FC<SolarSystemProps> = ({
     }
   };
 
-  // Screen mousemove hover test
-  const handleCanvasMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  // MouseDown listener for Sun press-and-hold (desktop browser support)
+  const handleCanvasMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
@@ -331,29 +410,52 @@ export const SolarSystem: React.FC<SolarSystemProps> = ({
     const wx = currentX.current + (sx - centerX) / currentScale.current;
     const wy = currentY.current + (sy - centerY) / currentScale.current;
 
-    let hoveringPlanetId: string | null = null;
+    const dx = wx - centerX;
+    const dy = wy - centerY;
+    const dist = Math.sqrt(dx * dx + dy * dy);
 
-    for (const key of Object.keys(PLANET_MAP)) {
-      const config = PLANET_MAP[key];
-      const pos = currentPositionsRef.current[key];
-      if (!pos) continue;
-
-      const dx = wx - pos.x;
-      const dy = wy - pos.y;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-
-      if (dist <= config.size * 1.8) {
-        hoveringPlanetId = config.id;
-        break;
-      }
+    // Hit the Sun (Sun base size is ~42px, allow 50px click radius)
+    if (dist <= 50) {
+      setIsPressingSun(true);
+      onSunPress();
     }
+  };
 
-    if (hoveringPlanetId) {
-      canvas.style.cursor = 'pointer';
-      setHoveredPlanetId(hoveringPlanetId);
-    } else {
-      canvas.style.cursor = 'default';
-      setHoveredPlanetId(null);
+  const handleCanvasMouseUp = () => {
+    if (isPressingSun) {
+      setIsPressingSun(false);
+      onSunRelease();
+    }
+  };
+
+  // Touch handlers for mobile screen support
+  const handleCanvasTouchStart = (e: React.TouchEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas || e.touches.length === 0) return;
+    const rect = canvas.getBoundingClientRect();
+    const sx = e.touches[0].clientX - rect.left;
+    const sy = e.touches[0].clientY - rect.top;
+
+    const centerX = canvas.width / 2;
+    const centerY = canvas.height / 2;
+
+    const wx = currentX.current + (sx - centerX) / currentScale.current;
+    const wy = currentY.current + (sy - centerY) / currentScale.current;
+
+    const dx = wx - centerX;
+    const dy = wy - centerY;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+
+    if (dist <= 50) {
+      setIsPressingSun(true);
+      onSunPress();
+    }
+  };
+
+  const handleCanvasTouchEnd = () => {
+    if (isPressingSun) {
+      setIsPressingSun(false);
+      onSunRelease();
     }
   };
 
@@ -441,10 +543,65 @@ export const SolarSystem: React.FC<SolarSystemProps> = ({
     ctx.restore();
   };
 
+  // Screen mousemove hover test
+  const handleCanvasMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const sx = e.clientX - rect.left;
+    const sy = e.clientY - rect.top;
+
+    const centerX = canvas.width / 2;
+    const centerY = canvas.height / 2;
+
+    const wx = currentX.current + (sx - centerX) / currentScale.current;
+    const wy = currentY.current + (sy - centerY) / currentScale.current;
+
+    let hoveringPlanetId: string | null = null;
+
+    // Check if hovering Sun
+    const dxSun = wx - centerX;
+    const dySun = wy - centerY;
+    const sunDist = Math.sqrt(dxSun * dxSun + dySun * dySun);
+    if (sunDist <= 50) {
+      canvas.style.cursor = 'pointer';
+      setHoveredPlanetId(null);
+      return;
+    }
+
+    for (const key of Object.keys(PLANET_MAP)) {
+      const config = PLANET_MAP[key];
+      const pos = currentPositionsRef.current[key];
+      if (!pos) continue;
+
+      const dx = wx - pos.x;
+      const dy = wy - pos.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+
+      if (dist <= config.size * 1.8) {
+        hoveringPlanetId = config.id;
+        break;
+      }
+    }
+
+    if (hoveringPlanetId) {
+      canvas.style.cursor = 'pointer';
+      setHoveredPlanetId(hoveringPlanetId);
+    } else {
+      canvas.style.cursor = 'default';
+      setHoveredPlanetId(null);
+    }
+  };
+
   return (
     <canvas
       ref={canvasRef}
       onClick={handleCanvasClick}
+      onMouseDown={handleCanvasMouseDown}
+      onMouseUp={handleCanvasMouseUp}
+      onMouseLeave={handleCanvasMouseUp}
+      onTouchStart={handleCanvasTouchStart}
+      onTouchEnd={handleCanvasTouchEnd}
       onMouseMove={handleCanvasMouseMove}
       style={{
         display: 'block',

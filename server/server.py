@@ -411,6 +411,22 @@ class KiraResponse(BaseModel):
     timestamp: str
     session_id: Optional[str] = None       # Phase 2: echo back the session ID
     gemini_suggested: bool = False          # Phase 2: True if Gemini fallback is recommended
+    intent: str = "general"                 # Phase 3: Intent classification for UI routing
+
+
+def classify_intent(ollama_response: str) -> str:
+    """Classify KIRA intent to map to the correct planetary system."""
+    response_lower = ollama_response.lower()
+    
+    # Check if a tool was invoked
+    if "tool: add_reminder" in response_lower or "tool: get_schedule" in response_lower:
+        return "calendar"
+    elif "tool: add_task" in response_lower or "tool: mark_done" in response_lower or "tool: list_tasks" in response_lower:
+        return "productivity"
+    elif "tool: search_github" in response_lower:
+        return "github"
+    
+    return "general"
 
 
 def _parse_schedule_datetime(msg: str) -> tuple[str | None, float | None, int | None]:
@@ -844,6 +860,7 @@ async def chat_text(req: ChatRequest):
             timestamp=datetime.now().isoformat(),
             session_id=req.session_id,
             gemini_suggested=suggest_gemini,
+            intent=classify_intent(ollama_response)
         )
     except Exception as e:
         status = "error"
@@ -960,6 +977,7 @@ async def voice_chat(
             timestamp=datetime.now().isoformat(),
             session_id=session_id,
             gemini_suggested=suggest_gemini,
+            intent=classify_intent(ollama_response)
         )
     except Exception as e:
         status = "error"
@@ -1059,6 +1077,7 @@ async def gemini_query(req: GeminiRequest):
             timestamp=datetime.now().isoformat(),
             session_id=req.session_id,
             gemini_suggested=False,
+            intent="gemini"
         )
     except Exception as e:
         status = "error"
