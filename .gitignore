@@ -18,3 +18,8 @@ kira_response.*
 # OS
 .DS_Store
 Thumbs.db
+
+.expo/
+node_modules/
+frontend/node_modules/
+frontend/dist/

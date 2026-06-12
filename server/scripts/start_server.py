@@ -60,7 +60,8 @@ def start_ngrok():
             resp = httpx.get("http://localhost:4040/api/tunnels", timeout=5)
             tunnels = resp.json().get("tunnels", [])
             for tunnel in tunnels:
-                if tunnel.get("proto") == "https":
+                addr = tunnel.get("config", {}).get("addr", "")
+                if tunnel.get("proto") == "https" and "8000" in str(addr):
                     url = tunnel["public_url"]
                     print(f"   [OK] Ngrok tunnel: {url}")
                     print(f"\n   [Mobile] On your phone, run:")
