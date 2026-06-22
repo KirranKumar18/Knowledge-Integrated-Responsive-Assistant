@@ -1,11 +1,38 @@
 import React, { useState, useEffect } from 'react';
-import { SolarSystem } from './components/SolarSystem';
+import { SolarSystem, CalendarEvent, GitHubRepo } from './components/SolarSystem';
 import { PLANET_MAP } from './components/Planet';
 import { useCamera } from './hooks/useCamera';
 import { useMic } from './hooks/useMic';
 import { useKIRA } from './hooks/useKIRA';
+import { useProductivityData } from './hooks/useProductivityData';
+import { useCalendarData } from './hooks/useCalendarData';
 import { Globe, Activity, Calendar, Github, Brain, ArrowLeft, Mic, Send } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
+
+const parseGithubRepos = (text: string): GitHubRepo[] => {
+  if (!text) return [];
+  const repos: GitHubRepo[] = [];
+  const blocks = text.split(/(?:First|Second|Third|Fourth|Fifth),?/gi);
+  for (let i = 1; i < blocks.length; i++) {
+    const block = blocks[i];
+    
+    const nameMatch = block.match(/^\s*(.+?)\s+by\s+(.+?)\s+with/i) || block.match(/^\s*(.+?)\s+with/i);
+    const repoName = nameMatch ? nameMatch[1].trim().replace(/^['"\s]+|['"\s]+$/g, '') : 'Repository';
+    
+    const starsMatch = block.match(/with\s+(\d+)\s+stars/i);
+    const stars = starsMatch ? parseInt(starsMatch[1], 10) : 0;
+    
+    const linkMatch = block.match(/Link:\s*(https?:\/\/github\.com\/\S+?)(?:\.|\s|$)/i);
+    const url = linkMatch ? linkMatch[1] : 'https://github.com';
+    
+    repos.push({
+      name: repoName,
+      stars: stars,
+      url: url
+    });
+  }
+  return repos;
+};
 
 const icons: Record<string, React.ReactNode> = {
   earth: <Globe className="w-5 h-5 text-blue-400" />,
@@ -36,12 +63,19 @@ const App: React.FC = () => {
   } = useCamera();
 
   const { isRecording, amplitude, audioBlob, audioExtension, startRecording, stopRecording } = useMic();
-  const { kiraState, sendVoice, sendText, approveGemini } = useKIRA();
+  const { kiraState, sendVoice, sendText, approveGemini, clearResponse } = useKIRA();
+
+  const productivityData = useProductivityData();
+  const calendarData = useCalendarData();
 
   const [time, setTime] = useState(new Date().toLocaleTimeString());
   const [textInput, setTextInput] = useState('');
   const [showTextInput, setShowTextInput] = useState(false);
   const [displayedResponse, setDisplayedResponse] = useState('');
+  const [typewriterDone, setTypewriterDone] = useState(false);
+
+  const [lastGithubRepos, setLastGithubRepos] = useState<GitHubRepo[]>([]);
+  const [githubEmptyResult, setGithubEmptyResult] = useState(false);
 
   // Clock
   useEffect(() => {
@@ -62,10 +96,12 @@ const App: React.FC = () => {
   useEffect(() => {
     if (!kiraState.response) {
       setDisplayedResponse('');
+      setTypewriterDone(false);
       return;
     }
 
     setDisplayedResponse('');
+    setTypewriterDone(false);
     const words = kiraState.response.split(' ');
     let currentWordIdx = 0;
     let buildText = '';
@@ -77,11 +113,77 @@ const App: React.FC = () => {
         currentWordIdx++;
       } else {
         clearInterval(interval);
+        setTypewriterDone(true);
       }
     }, 120); // Fade in next word every 120ms
 
     return () => clearInterval(interval);
   }, [kiraState.response]);
+
+  // Handle parsing GitHub repositories from KIRA response
+  useEffect(() => {
+    if (kiraState.intent === 'github' && kiraState.response) {
+      const parsed = parseGithubRepos(kiraState.response);
+      if (parsed.length > 0) {
+        setLastGithubRepos(parsed);
+        setGithubEmptyResult(false);
+      } else if (kiraState.response.toLowerCase().includes("couldn't find") || kiraState.response.toLowerCase().includes("no repositories")) {
+        setLastGithubRepos([]);
+        setGithubEmptyResult(true);
+      }
+    }
+  }, [kiraState.response, kiraState.intent]);
+
+  // Handle automatic camera focus on target planet when intent is classified
+  useEffect(() => {
+    if (!kiraState.response || kiraState.loading) return;
+
+    let targetPlanetId = 'earth';
+    if (kiraState.geminiSuggested) {
+      targetPlanetId = 'jupiter';
+    } else {
+      switch (kiraState.intent) {
+        case 'calendar':
+          targetPlanetId = 'saturn';
+          break;
+        case 'productivity':
+          targetPlanetId = 'mars';
+          break;
+        case 'github':
+          targetPlanetId = 'europa';
+          break;
+        case 'gemini':
+          targetPlanetId = 'jupiter';
+          break;
+        case 'general':
+        default:
+          targetPlanetId = 'earth';
+          break;
+      }
+    }
+
+    focusOnPlanet(targetPlanetId);
+  }, [kiraState.response, kiraState.loading, kiraState.intent, kiraState.geminiSuggested, focusOnPlanet]);
+
+  // Handle 3-second hold timer after typewriter finishes before pulling back to overview
+  useEffect(() => {
+    if (typewriterDone && activePlanetId && !kiraState.geminiSuggested) {
+      const timer = setTimeout(() => {
+        handleReset();
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [typewriterDone, activePlanetId, kiraState.geminiSuggested]);
+
+  const handleReset = () => {
+    resetToOverview();
+    clearResponse();
+  };
+
+  const handleSunPress = () => {
+    clearResponse();
+    startRecording();
+  };
 
   const activePlanet = activePlanetId ? PLANET_MAP[activePlanetId] : null;
 
@@ -100,16 +202,22 @@ const App: React.FC = () => {
         <SolarSystem
           activePlanetId={activePlanetId}
           focusOnPlanet={focusOnPlanet}
-          resetToOverview={resetToOverview}
+          resetToOverview={handleReset}
           updateCamera={updateCamera}
           currentX={currentX}
           currentY={currentY}
           currentScale={currentScale}
           isRecording={isRecording}
           amplitude={amplitude}
-          onSunPress={startRecording}
+          onSunPress={handleSunPress}
           onSunRelease={stopRecording}
           kiraLoading={kiraState.loading}
+          
+          productivityTime={productivityData.current_distraction_time}
+          calendarEvents={calendarData.events}
+          responseTime={kiraState.responseTime}
+          lastGithubRepos={lastGithubRepos}
+          githubEmptyResult={githubEmptyResult}
         />
       </div>
 
@@ -128,7 +236,7 @@ const App: React.FC = () => {
             <h1 className="text-xl font-bold tracking-wide bg-gradient-to-r from-slate-100 to-slate-400 bg-clip-text text-transparent">
               KIRA
             </h1>
-            <p className="text-xs text-slate-400 font-medium">Solar System UI — Phase 3</p>
+            <p className="text-xs text-slate-400 font-medium">Solar System UI — Phase 4</p>
           </div>
         </div>
 
@@ -149,7 +257,7 @@ const App: React.FC = () => {
             className="absolute left-6 top-28 z-10 pointer-events-auto"
           >
             <button
-              onClick={resetToOverview}
+              onClick={handleReset}
               className="glass-panel px-5 py-3.5 flex items-center gap-3 text-sm font-semibold tracking-wide text-slate-200 hover:text-white bg-slate-900/60 border border-white/10 hover:border-white/20 hover:bg-slate-900/80 active:scale-95 transition-all"
             >
               <ArrowLeft className="w-4 h-4 text-amber-400" />
@@ -160,10 +268,10 @@ const App: React.FC = () => {
         )}
       </AnimatePresence>
 
-      {/* 4. Center Dialog Overlay for KIRA Voice Response */}
+      {/* 4. Center Dialog Overlay for KIRA Voice Input / Thinking */}
       <div className="absolute left-1/2 bottom-28 transform -translate-x-1/2 w-full max-w-xl px-6 z-10 pointer-events-none">
         <AnimatePresence>
-          {(isRecording || kiraState.loading || displayedResponse) && (
+          {(isRecording || kiraState.loading) && (
             <motion.div
               initial={{ opacity: 0, y: 30, scale: 0.95 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -185,40 +293,100 @@ const App: React.FC = () => {
               {/* Processing/Thinking State */}
               {kiraState.loading && (
                 <div className="flex flex-col items-center gap-2">
-                  <div className="text-slate-300 text-sm font-bold animate-pulse uppercase tracking-wider">
+                  <div className="text-slate-300 text-sm font-bold animate-pulse uppercase tracking-wider font-mono">
                     KIRA is resolving intent...
                   </div>
                   <div className="text-xs text-slate-400">Querying FastAPI server & local LLM</div>
-                </div>
-              )}
-
-              {/* Response Display */}
-              {displayedResponse && !isRecording && !kiraState.loading && (
-                <div className="flex flex-col gap-3">
-                  {/* User Transcription */}
-                  {kiraState.transcription && (
-                    <div className="text-xs text-slate-400 italic">
-                      " {kiraState.transcription} "
-                    </div>
-                  )}
-                  {/* KIRA Answer with word fade-in */}
-                  <div className="text-base text-slate-100 font-medium leading-relaxed tracking-wide">
-                    {displayedResponse}
-                  </div>
-                  {/* Intent Tag */}
-                  {kiraState.intent && (
-                    <div className="flex justify-center mt-1">
-                      <span className="text-[10px] font-mono tracking-widest uppercase bg-amber-400/10 border border-amber-400/20 px-2 py-0.5 rounded text-amber-400">
-                        Intent: {kiraState.intent}
-                      </span>
-                    </div>
-                  )}
                 </div>
               )}
             </motion.div>
           )}
         </AnimatePresence>
       </div>
+
+      {/* 4b. Sci-Fi Hologram Overlay positioned next to planet (Phase 4) */}
+      <AnimatePresence>
+        {activePlanetId && displayedResponse && !isRecording && !kiraState.loading && (
+          <motion.div
+            id="hologram-overlay"
+            initial={{ opacity: 0, scale: 0.8 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.8 }}
+            transition={{ type: 'spring', stiffness: 200, damping: 20 }}
+            className="hologram-hud hologram-hud-active"
+            style={{
+              fontFamily: activePlanetId === 'europa' ? 'var(--font-mono)' : 'var(--font-sans)',
+              borderColor: `${activePlanet?.accentColor}dd`,
+              boxShadow: `0 0 20px ${activePlanet?.accentColor}25, inset 0 0 10px ${activePlanet?.accentColor}10`,
+              borderWidth: '1.5px',
+              borderStyle: 'solid',
+            }}
+          >
+            {/* Hologram HUD Top Info bar */}
+            <div 
+              className="flex justify-between items-center border-b pb-1.5 mb-2 text-[10px] tracking-wider font-mono font-bold"
+              style={{ 
+                color: activePlanet?.accentColor,
+                borderColor: `${activePlanet?.accentColor}25`
+              }}
+            >
+              <span>SYS // {activePlanet?.name.toUpperCase()} // SECTOR</span>
+              <span>ONLINE</span>
+            </div>
+
+            {/* User request query (as a faint header) */}
+            {kiraState.transcription && (
+              <div className="text-[10px] text-slate-400 font-mono italic mb-2 opacity-75">
+                QUERY: "{kiraState.transcription}"
+              </div>
+            )}
+
+            {/* Word-by-word fading response content */}
+            <div 
+              style={{
+                color: '#f8f9fa',
+                display: '-webkit-box',
+                WebkitLineClamp: 3,
+                WebkitBoxOrient: 'vertical',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                fontSize: '13px',
+                lineHeight: '1.45',
+                textShadow: `0 0 6px ${activePlanet?.accentColor}40`,
+              }}
+              className="leading-relaxed font-medium"
+            >
+              {displayedResponse}
+            </div>
+
+            {/* Gemini Fallback Confirmation */}
+            {kiraState.geminiSuggested && (
+              <div 
+                className="flex flex-col gap-2 mt-3 pt-2 border-t"
+                style={{ borderColor: `${activePlanet?.accentColor}25` }}
+              >
+                <span className="text-[10px] text-amber-400 font-mono font-semibold tracking-wider animate-pulse">
+                  WARNING: RESOLUTION FAILED. ACTIVATE GEMINI?
+                </span>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => approveGemini(kiraState.transcription)}
+                    className="flex-1 py-1 px-2 rounded text-[10px] font-bold tracking-wider bg-amber-500 hover:bg-amber-400 text-slate-950 transition-all cursor-pointer"
+                  >
+                    PROCEED
+                  </button>
+                  <button
+                    onClick={handleReset}
+                    className="flex-1 py-1 px-2 rounded text-[10px] font-bold tracking-wider bg-white/5 border border-white/10 hover:bg-white/10 text-slate-200 transition-all cursor-pointer"
+                  >
+                    CANCEL
+                  </button>
+                </div>
+              </div>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* 5. Right Sidebar Widget */}
       <aside className="absolute right-6 top-28 bottom-6 w-80 z-10 flex flex-col gap-4 pointer-events-none">

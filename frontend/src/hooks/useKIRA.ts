@@ -10,6 +10,7 @@ export interface KIRAState {
   response: string;
   intent: string;
   geminiSuggested: boolean;
+  responseTime: number;
   error: string | null;
 }
 
@@ -20,6 +21,7 @@ export const useKIRA = () => {
     response: '',
     intent: 'general',
     geminiSuggested: false,
+    responseTime: 1000,
     error: null,
   });
 
@@ -56,6 +58,7 @@ export const useKIRA = () => {
 
   const sendVoice = async (audioBlob: Blob, extension: string = 'webm') => {
     setKiraState((prev) => ({ ...prev, loading: true, error: null }));
+    const startTime = Date.now();
     try {
       const formData = new FormData();
       // Server expects "audio" file parameter
@@ -65,6 +68,7 @@ export const useKIRA = () => {
       const resp = await axios.post(`${API_BASE}/voice`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
+      const duration = Date.now() - startTime;
 
       const { transcription, response, intent, gemini_suggested } = resp.data;
 
@@ -74,6 +78,7 @@ export const useKIRA = () => {
         response,
         intent: intent || 'general',
         geminiSuggested: !!gemini_suggested,
+        responseTime: duration,
         error: null,
       });
 
@@ -93,11 +98,13 @@ export const useKIRA = () => {
 
   const sendText = async (text: string) => {
     setKiraState((prev) => ({ ...prev, loading: true, error: null }));
+    const startTime = Date.now();
     try {
       const resp = await axios.post(`${API_BASE}/chat`, {
         message: text,
         session_id: sessionRef.current,
       });
+      const duration = Date.now() - startTime;
 
       const { response, intent, gemini_suggested } = resp.data;
 
@@ -107,6 +114,7 @@ export const useKIRA = () => {
         response,
         intent: intent || 'general',
         geminiSuggested: !!gemini_suggested,
+        responseTime: duration,
         error: null,
       });
 
@@ -123,11 +131,13 @@ export const useKIRA = () => {
 
   const approveGemini = async (prompt: string) => {
     setKiraState((prev) => ({ ...prev, loading: true, error: null }));
+    const startTime = Date.now();
     try {
       const resp = await axios.post(`${API_BASE}/gemini`, {
         prompt,
         session_id: sessionRef.current,
       });
+      const duration = Date.now() - startTime;
 
       const { response } = resp.data;
 
@@ -137,6 +147,7 @@ export const useKIRA = () => {
         response,
         intent: 'gemini',
         geminiSuggested: false,
+        responseTime: duration,
         error: null,
       }));
 
@@ -148,11 +159,21 @@ export const useKIRA = () => {
     }
   };
 
+  const clearResponse = () => {
+    setKiraState((prev) => ({
+      ...prev,
+      response: '',
+      transcription: '',
+      geminiSuggested: false,
+    }));
+  };
+
   return {
     kiraState,
     sendVoice,
     sendText,
     approveGemini,
+    clearResponse,
     session_id: sessionRef.current,
   };
 };

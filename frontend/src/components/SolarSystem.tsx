@@ -3,6 +3,17 @@ import { PLANET_MAP, PlanetConfig } from './Planet';
 import { StarField } from './StarField';
 import { usePlanetOrbit, PlanetPosition } from '../hooks/usePlanetOrbit';
 
+export interface CalendarEvent {
+  summary: string;
+  start: string;
+}
+
+export interface GitHubRepo {
+  name: string;
+  stars: number;
+  url: string;
+}
+
 interface SolarSystemProps {
   activePlanetId: string | null;
   focusOnPlanet: (id: string) => void;
@@ -11,13 +22,18 @@ interface SolarSystemProps {
   currentX: React.MutableRefObject<number>;
   currentY: React.MutableRefObject<number>;
   currentScale: React.MutableRefObject<number>;
-  
-  // Phase 3 voice integration props
   isRecording: boolean;
   amplitude: number;
   onSunPress: () => void;
   onSunRelease: () => void;
   kiraLoading: boolean;
+
+  // Phase 5 Additions
+  productivityTime: number;
+  calendarEvents: CalendarEvent[];
+  responseTime: number;
+  lastGithubRepos: GitHubRepo[];
+  githubEmptyResult: boolean;
 }
 
 export const SolarSystem: React.FC<SolarSystemProps> = ({
@@ -33,6 +49,12 @@ export const SolarSystem: React.FC<SolarSystemProps> = ({
   onSunPress,
   onSunRelease,
   kiraLoading,
+
+  productivityTime,
+  calendarEvents,
+  responseTime,
+  lastGithubRepos,
+  githubEmptyResult,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const starFieldRef = useRef<StarField | null>(null);
@@ -62,9 +84,6 @@ export const SolarSystem: React.FC<SolarSystemProps> = ({
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
     const resizeCanvas = () => {
       canvas.width = window.innerWidth;
       canvas.height = window.innerHeight;
@@ -80,6 +99,9 @@ export const SolarSystem: React.FC<SolarSystemProps> = ({
     resizeCanvas();
 
     const render = () => {
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
       elapsedFrames.current += 1;
       const width = canvas.width;
       const height = canvas.height;
@@ -129,12 +151,11 @@ export const SolarSystem: React.FC<SolarSystemProps> = ({
         centerX, centerY, Math.max(width, height) * 0.7
       );
       
-      // If KIRA is listening or thinking, shift the space glow to reflect activity
       if (isRecording) {
-        spaceGlow.addColorStop(0, 'rgba(252, 196, 25, 0.25)'); // Intense amber glow
+        spaceGlow.addColorStop(0, 'rgba(252, 196, 25, 0.25)');
         spaceGlow.addColorStop(0.4, 'rgba(253, 126, 20, 0.08)');
       } else if (kiraLoading) {
-        spaceGlow.addColorStop(0, 'rgba(255, 255, 255, 0.2)'); // Pulsing white/cyan glow
+        spaceGlow.addColorStop(0, 'rgba(255, 255, 255, 0.2)');
         spaceGlow.addColorStop(0.3, 'rgba(92, 124, 250, 0.08)');
       } else {
         spaceGlow.addColorStop(0, 'rgba(253, 184, 19, 0.12)');
@@ -163,23 +184,21 @@ export const SolarSystem: React.FC<SolarSystemProps> = ({
       // 7. Draw Sun (Core KIRA AI)
       ctx.save();
       
-      // Calculations for Sun animation states
-      let sunPulse = Math.sin(elapsedFrames.current * 0.02) * 2.5;
+      // Speed up or slow down pulse based on server response time
+      const sunSpeedMultiplier = Math.max(0.2, Math.min(5.0, 1000 / responseTime));
+      let sunPulse = Math.sin(elapsedFrames.current * 0.02 * sunSpeedMultiplier) * 2.5;
       let sunBaseSize = 42;
       
-      // Listen State: Solar flare erupts outward based on volume
       if (isRecording) {
         sunPulse = Math.sin(elapsedFrames.current * 0.08) * 3 + amplitude * 18;
-      } 
-      // Thinking State: Rapid flickering corona, intense brightness
-      else if (kiraLoading) {
+      } else if (kiraLoading) {
         const flicker = Math.random() * 4 - 2;
         sunPulse = Math.sin(elapsedFrames.current * 0.15) * 4.5 + flicker;
       }
       
       const sunSize = sunBaseSize + sunPulse;
 
-      // Draw real-time voice amplitude rings radiating from Sun surface
+      // Real-time voice amplitude rings
       if (isRecording && amplitude > 0.05) {
         ctx.save();
         const numRings = 3;
@@ -192,7 +211,6 @@ export const SolarSystem: React.FC<SolarSystemProps> = ({
           ctx.lineWidth = 2 / cam.scale;
           ctx.setLineDash([6, 12]);
           ctx.beginPath();
-          // Radiating voice rings spin slowly
           ctx.arc(centerX, centerY, ringRadius, elapsedFrames.current * 0.005 + (i * Math.PI / 3), elapsedFrames.current * 0.005 + (i * Math.PI / 3) + Math.PI * 2);
           ctx.stroke();
         }
@@ -202,17 +220,17 @@ export const SolarSystem: React.FC<SolarSystemProps> = ({
       // Pulsing Corona Halos
       const numCoronaLayers = 3;
       for (let i = 0; i < numCoronaLayers; i++) {
-        let speedCoeff = 0.015 - i * 0.003;
+        let speedCoeff = (0.015 - i * 0.003) * sunSpeedMultiplier;
         let scaleCoeff = 6 - i * 2;
         if (kiraLoading) {
-          speedCoeff *= 4; // Faster pulse during thinking
+          speedCoeff *= 4;
           scaleCoeff *= 1.4;
         }
         
         const layerPulse = Math.sin(elapsedFrames.current * speedCoeff) * scaleCoeff;
         const radius = sunBaseSize + (i * 12) + layerPulse;
         let opacity = (0.12 - i * 0.035) * (0.8 + Math.sin(elapsedFrames.current * 0.03) * 0.2);
-        if (kiraLoading) opacity *= 1.6; // Brighter halo during thinking
+        if (kiraLoading) opacity *= 1.6;
         
         ctx.fillStyle = kiraLoading ? 'rgba(255, 236, 153, 1)' : 'rgba(255, 190, 40, 1)';
         ctx.globalAlpha = Math.max(0.01, Math.min(0.9, opacity));
@@ -230,7 +248,7 @@ export const SolarSystem: React.FC<SolarSystemProps> = ({
         sunGrad.addColorStop(0, '#ffffff');
         sunGrad.addColorStop(0.3, '#fff9db');
         sunGrad.addColorStop(0.8, '#ffd43b');
-        sunGrad.addColorStop(1, 'rgba(252, 196, 25, 0.95)'); // Intense blinding gold
+        sunGrad.addColorStop(1, 'rgba(252, 196, 25, 0.95)');
       } else {
         sunGrad.addColorStop(0, '#ffffff');
         sunGrad.addColorStop(0.25, '#fff9db');
@@ -263,7 +281,18 @@ export const SolarSystem: React.FC<SolarSystemProps> = ({
 
         // Saturn Rings (behind)
         if (config.id === 'saturn') {
-          drawSaturnRings(ctx, pos.x, pos.y, config.size, elapsedFrames.current, true);
+          drawSaturnRings(
+            ctx,
+            pos.x,
+            pos.y,
+            config.size,
+            elapsedFrames.current,
+            true,
+            calendarEvents.length,
+            calendarEvents,
+            cam.scale,
+            activePlanetId
+          );
         }
 
         // Planet Body 3D Shading
@@ -277,26 +306,40 @@ export const SolarSystem: React.FC<SolarSystemProps> = ({
         const fx = pos.x - ux * lightShift;
         const fy = pos.y - uy * lightShift;
 
-        const planetGrad = ctx.createRadialGradient(
-          fx, fy, 0,
-          pos.x, pos.y, config.size
-        );
-        planetGrad.addColorStop(0, config.accentColor);
-        planetGrad.addColorStop(0.4, config.baseColor);
-        planetGrad.addColorStop(1, '#040608');
+        if (config.id === 'mars') {
+          drawMarsSurface(ctx, pos.x, pos.y, config.size, elapsedFrames.current, productivityTime);
+        } else {
+          const planetGrad = ctx.createRadialGradient(
+            fx, fy, 0,
+            pos.x, pos.y, config.size
+          );
+          planetGrad.addColorStop(0, config.accentColor);
+          planetGrad.addColorStop(0.4, config.baseColor);
+          planetGrad.addColorStop(1, '#040608');
 
-        ctx.fillStyle = planetGrad;
-        ctx.shadowColor = config.accentColor;
-        ctx.shadowBlur = 5 / cam.scale;
-        ctx.beginPath();
-        ctx.arc(pos.x, pos.y, config.size, 0, Math.PI * 2);
-        ctx.fill();
-
-        ctx.shadowBlur = 0;
+          ctx.fillStyle = planetGrad;
+          ctx.shadowColor = config.accentColor;
+          ctx.shadowBlur = 5 / cam.scale;
+          ctx.beginPath();
+          ctx.arc(pos.x, pos.y, config.size, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.shadowBlur = 0;
+        }
 
         // Saturn Rings (front)
         if (config.id === 'saturn') {
-          drawSaturnRings(ctx, pos.x, pos.y, config.size, elapsedFrames.current, false);
+          drawSaturnRings(
+            ctx,
+            pos.x,
+            pos.y,
+            config.size,
+            elapsedFrames.current,
+            false,
+            calendarEvents.length,
+            calendarEvents,
+            cam.scale,
+            activePlanetId
+          );
         }
 
         // Earth Clouds
@@ -304,9 +347,10 @@ export const SolarSystem: React.FC<SolarSystemProps> = ({
           drawEarthClouds(ctx, pos.x, pos.y, config.size, elapsedFrames.current);
         }
 
-        // Europa Hex cracks
+        // Europa Hex cracks & pillars
         if (config.id === 'europa') {
-          drawEuropaHexGrid(ctx, pos.x, pos.y, config.size, elapsedFrames.current);
+          drawEuropaHexGrid(ctx, pos.x, pos.y, config.size, elapsedFrames.current, githubEmptyResult);
+          drawEuropaPillars(ctx, pos.x, pos.y, config.size, lastGithubRepos, cam.scale, activePlanetId);
         }
 
         // Hover Ring
@@ -330,7 +374,58 @@ export const SolarSystem: React.FC<SolarSystemProps> = ({
         ctx.restore();
       }
 
+      // 9. Draw Hologram Connector Line in World Coordinates (Phase 4)
+      if (activePlanetId) {
+        const hologram = document.getElementById('hologram-overlay');
+        if (hologram) {
+          const config = PLANET_MAP[activePlanetId];
+          const pos = positions[activePlanetId];
+          if (pos && config) {
+            ctx.save();
+            ctx.strokeStyle = config.accentColor;
+            ctx.lineWidth = 1.5 / cam.scale;
+            ctx.globalAlpha = 0.7;
+            ctx.setLineDash([2, 4]); // tech dashed line
+
+            ctx.beginPath();
+            // Start at planet edge (not center)
+            const dx = pos.x - centerX;
+            const dy = pos.y - centerY;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            const ux = dx / dist;
+            const uy = dy / dist;
+            ctx.moveTo(pos.x + ux * config.size, pos.y + uy * config.size);
+
+            // Tech callout angles
+            ctx.lineTo(pos.x + 30 / cam.scale, pos.y - 30 / cam.scale);
+            ctx.lineTo(pos.x + 50 / cam.scale, pos.y - 40 / cam.scale);
+            ctx.stroke();
+
+            // End indicator point
+            ctx.fillStyle = config.accentColor;
+            ctx.globalAlpha = 0.95;
+            ctx.beginPath();
+            ctx.arc(pos.x + 50 / cam.scale, pos.y - 40 / cam.scale, 2.5 / cam.scale, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+          }
+        }
+      }
+
       ctx.restore(); // Revert Camera transform
+
+      // 10. Update Hologram Position directly in DOM for 60fps locking (Phase 4)
+      const hologram = document.getElementById('hologram-overlay');
+      if (hologram && activePlanetId) {
+        const activePlanetPos = currentPositionsRef.current[activePlanetId];
+        if (activePlanetPos) {
+          const sx = centerX + (activePlanetPos.x - cam.x) * cam.scale;
+          const sy = centerY + (activePlanetPos.y - cam.y) * cam.scale;
+          
+          hologram.style.left = `${sx + 50}px`;
+          hologram.style.top = `${sy - 40}px`;
+        }
+      }
 
       animationFrameId.current = requestAnimationFrame(render);
     };
@@ -347,7 +442,6 @@ export const SolarSystem: React.FC<SolarSystemProps> = ({
 
   // Screen click hit testing
   const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    // If user clicked Sun, don't trigger planet routing
     if (isPressingSun) {
       setIsPressingSun(false);
       return;
@@ -365,12 +459,43 @@ export const SolarSystem: React.FC<SolarSystemProps> = ({
     const wx = currentX.current + (sx - centerX) / currentScale.current;
     const wy = currentY.current + (sy - centerY) / currentScale.current;
 
-    // Check if clicked the Sun (overview coordinates)
+    // Check if clicked Europa's pillars
+    if (activePlanetId === 'europa' && lastGithubRepos.length > 0) {
+      const pos = currentPositionsRef.current['europa'];
+      if (pos) {
+        let clickedPillarUrl: string | null = null;
+        lastGithubRepos.forEach((repo, idx) => {
+          const numRepos = lastGithubRepos.length;
+          const spacing = 28 / currentScale.current;
+          const px = pos.x + (idx - (numRepos - 1) / 2) * spacing;
+          
+          const stars = repo.stars;
+          const minHeight = 12 / currentScale.current;
+          const maxHeight = 50 / currentScale.current;
+          const height = stars > 0 ? Math.min(maxHeight, minHeight + Math.log10(stars) * (8 / currentScale.current)) : minHeight;
+          const width = 8 / currentScale.current;
+
+          const leftBound = px - width/2;
+          const rightBound = px + width/2;
+          const topBound = pos.y - height;
+          const bottomBound = pos.y;
+
+          if (wx >= leftBound && wx <= rightBound && wy >= topBound && wy <= bottomBound) {
+            clickedPillarUrl = repo.url;
+          }
+        });
+
+        if (clickedPillarUrl) {
+          window.open(clickedPillarUrl, '_blank');
+          return;
+        }
+      }
+    }
+
     const dxSun = wx - centerX;
     const dySun = wy - centerY;
     const sunDist = Math.sqrt(dxSun * dxSun + dySun * dySun);
     if (sunDist <= 50) {
-      // Sun click is handled via mouse down/up triggers for voice recording
       return;
     }
 
@@ -396,7 +521,7 @@ export const SolarSystem: React.FC<SolarSystemProps> = ({
     }
   };
 
-  // MouseDown listener for Sun press-and-hold (desktop browser support)
+  // MouseDown listener for Sun press-and-hold
   const handleCanvasMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -414,7 +539,6 @@ export const SolarSystem: React.FC<SolarSystemProps> = ({
     const dy = wy - centerY;
     const dist = Math.sqrt(dx * dx + dy * dy);
 
-    // Hit the Sun (Sun base size is ~42px, allow 50px click radius)
     if (dist <= 50) {
       setIsPressingSun(true);
       onSunPress();
@@ -428,7 +552,7 @@ export const SolarSystem: React.FC<SolarSystemProps> = ({
     }
   };
 
-  // Touch handlers for mobile screen support
+  // Touch handlers for mobile screens
   const handleCanvasTouchStart = (e: React.TouchEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas || e.touches.length === 0) return;
@@ -466,7 +590,11 @@ export const SolarSystem: React.FC<SolarSystemProps> = ({
     y: number,
     planetSize: number,
     frames: number,
-    behind: boolean
+    behind: boolean,
+    eventCount: number,
+    events: CalendarEvent[],
+    camScale: number,
+    activePlanetId: string | null
   ) => {
     ctx.save();
     ctx.translate(x, y);
@@ -477,6 +605,10 @@ export const SolarSystem: React.FC<SolarSystemProps> = ({
     const startAngle = behind ? Math.PI : 0;
     const endAngle = behind ? 0 : Math.PI;
 
+    // Ring density/width changes with busier days
+    const ringDensityCoeff = 1 + Math.min(2.5, eventCount * 0.25);
+    const ringWidth = planetSize * 0.42 * ringDensityCoeff;
+
     const ringGrad = ctx.createLinearGradient(-rx, 0, rx, 0);
     ringGrad.addColorStop(0, 'rgba(233, 196, 106, 0.2)');
     ringGrad.addColorStop(0.35, 'rgba(244, 162, 97, 0.85)');
@@ -485,7 +617,7 @@ export const SolarSystem: React.FC<SolarSystemProps> = ({
     ringGrad.addColorStop(1, 'rgba(233, 196, 106, 0.2)');
 
     ctx.strokeStyle = ringGrad;
-    ctx.lineWidth = planetSize * 0.42;
+    ctx.lineWidth = ringWidth;
     ctx.lineCap = 'round';
 
     ctx.beginPath();
@@ -498,6 +630,105 @@ export const SolarSystem: React.FC<SolarSystemProps> = ({
     ctx.ellipse(0, 0, rx * 0.8, ry * 0.8, 0, startAngle, endAngle, false);
     ctx.stroke();
 
+    ctx.restore();
+
+    // Draw Event particles orbiting Saturn
+    if (eventCount > 0) {
+      events.forEach((evt, idx) => {
+        const baseAngle = (idx * (Math.PI * 2) / eventCount);
+        const orbitSpeed = 0.0015;
+        const currentAngle = baseAngle + frames * orbitSpeed;
+
+        const erx = planetSize * 1.6;
+        const ery = planetSize * 0.45;
+        const ex = erx * Math.cos(currentAngle);
+        const ey_val = ery * Math.sin(currentAngle);
+
+        const rotX = ex * Math.cos(0.3) - ey_val * Math.sin(0.3);
+        const rotY = ex * Math.sin(0.3) + ey_val * Math.cos(0.3);
+
+        const px = x + rotX;
+        const py = y + rotY;
+
+        const isBehind = Math.sin(currentAngle) < 0;
+        if (isBehind !== behind) return;
+
+        ctx.save();
+        ctx.fillStyle = '#fff9db';
+        ctx.shadowColor = '#fcc419';
+        ctx.shadowBlur = 8 / camScale;
+        ctx.beginPath();
+        ctx.arc(px, py, 2.5 / camScale, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+
+        if (activePlanetId === 'saturn') {
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+          ctx.font = `${Math.max(6, 8 / camScale)}px "Outfit"`;
+          ctx.textAlign = 'left';
+          ctx.fillText(evt.summary, px + 5 / camScale, py - 2 / camScale);
+        }
+        ctx.restore();
+      });
+    }
+  };
+
+  const drawMarsSurface = (
+    ctx: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    size: number,
+    frames: number,
+    distractionTime: number
+  ) => {
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(x, y, size, 0, Math.PI * 2);
+    ctx.clip();
+
+    ctx.fillStyle = '#b23b3b';
+    ctx.fillRect(x - size, y - size, size * 2, size * 2);
+
+    ctx.fillStyle = '#7a2222';
+    ctx.beginPath();
+    ctx.arc(x - size * 0.3, y - size * 0.2, size * 0.4, 0, Math.PI * 2);
+    ctx.arc(x + size * 0.4, y + size * 0.3, size * 0.35, 0, Math.PI * 2);
+    ctx.fill();
+
+    const stormIntensity = Math.min(1.0, distractionTime / 300);
+
+    if (stormIntensity > 0.05) {
+      const numStorms = Math.floor(stormIntensity * 8) + 2;
+      ctx.strokeStyle = `rgba(230, 0, 0, ${0.4 + stormIntensity * 0.5})`;
+      ctx.lineWidth = 1.5;
+      
+      for (let i = 0; i < numStorms; i++) {
+        const angle = frames * (0.02 + i * 0.01) + (i * Math.PI / 4);
+        const rx = size * (0.5 + Math.sin(angle) * 0.3);
+        const ry = size * (0.2 + Math.cos(angle) * 0.1);
+        
+        ctx.beginPath();
+        ctx.ellipse(x, y + (i - numStorms/2) * (size * 0.2), rx, ry, 0.1, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+
+    ctx.restore();
+
+    ctx.save();
+    const grad = ctx.createRadialGradient(x, y, size * 0.95, x, y, size * 1.35);
+    if (distractionTime > 150) {
+      grad.addColorStop(0, 'rgba(120, 10, 10, 0.35)');
+      grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    } else {
+      grad.addColorStop(0, 'rgba(40, 200, 100, 0.25)');
+      grad.addColorStop(0.5, 'rgba(50, 180, 80, 0.08)');
+      grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    }
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(x, y, size * 1.4, 0, Math.PI * 2);
+    ctx.fill();
     ctx.restore();
   };
 
@@ -516,7 +747,7 @@ export const SolarSystem: React.FC<SolarSystemProps> = ({
     ctx.restore();
   };
 
-  const drawEuropaHexGrid = (ctx: CanvasRenderingContext2D, x: number, y: number, size: number, frames: number) => {
+  const drawEuropaHexGrid = (ctx: CanvasRenderingContext2D, x: number, y: number, size: number, frames: number, emptyResult: boolean) => {
     ctx.save();
     ctx.beginPath();
     ctx.arc(x, y, size, 0, Math.PI * 2);
@@ -532,14 +763,91 @@ export const SolarSystem: React.FC<SolarSystemProps> = ({
       ctx.lineTo(x + i - size, y - size);
     }
     ctx.stroke();
-    const shimmer = Math.abs(Math.sin(frames * 0.015));
-    ctx.strokeStyle = `rgba(231, 245, 255, ${shimmer * 0.45})`;
-    ctx.lineWidth = 0.8;
-    ctx.beginPath();
-    ctx.moveTo(x - size * 0.4, y - size * 0.2);
-    ctx.lineTo(x - size * 0.1, y + size * 0.3);
-    ctx.lineTo(x + size * 0.4, y + size * 0.1);
-    ctx.stroke();
+    
+    if (emptyResult) {
+      ctx.strokeStyle = 'rgba(255, 107, 107, 0.85)';
+      ctx.lineWidth = 1.0;
+      ctx.beginPath();
+      ctx.moveTo(x - size * 0.3, y - size * 0.3);
+      ctx.lineTo(x + size * 0.1, y + size * 0.2);
+      ctx.lineTo(x + size * 0.4, y + size * 0.4);
+      ctx.stroke();
+    } else {
+      const shimmer = Math.abs(Math.sin(frames * 0.015));
+      ctx.strokeStyle = `rgba(231, 245, 255, ${shimmer * 0.45})`;
+      ctx.lineWidth = 0.8;
+      ctx.beginPath();
+      ctx.moveTo(x - size * 0.4, y - size * 0.2);
+      ctx.lineTo(x - size * 0.1, y + size * 0.3);
+      ctx.lineTo(x + size * 0.4, y + size * 0.1);
+      ctx.stroke();
+    }
+    ctx.restore();
+  };
+
+  const drawEuropaPillars = (
+    ctx: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    planetSize: number,
+    repos: GitHubRepo[],
+    camScale: number,
+    activePlanetId: string | null
+  ) => {
+    if (repos.length === 0) return;
+
+    ctx.save();
+    repos.forEach((repo, idx) => {
+      const numRepos = repos.length;
+      const spacing = 28 / camScale;
+      const px = x + (idx - (numRepos - 1) / 2) * spacing;
+      
+      const stars = repo.stars;
+      const minHeight = 12 / camScale;
+      const maxHeight = 50 / camScale;
+      const height = stars > 0 ? Math.min(maxHeight, minHeight + Math.log10(stars) * (8 / camScale)) : minHeight;
+      const width = 8 / camScale;
+
+      const isFocused = activePlanetId === 'europa';
+      
+      ctx.save();
+      if (isFocused) {
+        const grad = ctx.createLinearGradient(px - width/2, y, px - width/2, y - height);
+        grad.addColorStop(0, 'rgba(102, 217, 232, 0.2)');
+        grad.addColorStop(0.7, 'rgba(102, 217, 232, 0.85)');
+        grad.addColorStop(1, '#ffffff');
+        
+        ctx.fillStyle = grad;
+        ctx.shadowColor = '#66d9e8';
+        ctx.shadowBlur = 10 / camScale;
+        
+        ctx.beginPath();
+        ctx.rect(px - width/2, y - height, width, height);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.ellipse(px, y - height, width/2, 2 / camScale, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = '#e7f5ff';
+        ctx.font = `${Math.max(6, 8 / camScale)}px "Share Tech Mono"`;
+        ctx.textAlign = 'center';
+        
+        const cleanName = repo.name.length > 12 ? repo.name.substring(0, 10) + '..' : repo.name;
+        ctx.fillText(cleanName, px, y - height - 12 / camScale);
+        ctx.fillStyle = '#66d9e8';
+        ctx.fillText(`★${stars >= 1000 ? (stars/1000).toFixed(1) + 'k' : stars}`, px, y - height - 4 / camScale);
+      } else {
+        ctx.strokeStyle = 'rgba(102, 217, 232, 0.35)';
+        ctx.lineWidth = 0.5 / camScale;
+        ctx.beginPath();
+        ctx.rect(px - width/2, y - height * 0.7, width, height * 0.7);
+        ctx.stroke();
+      }
+      ctx.restore();
+    });
     ctx.restore();
   };
 
@@ -559,7 +867,6 @@ export const SolarSystem: React.FC<SolarSystemProps> = ({
 
     let hoveringPlanetId: string | null = null;
 
-    // Check if hovering Sun
     const dxSun = wx - centerX;
     const dySun = wy - centerY;
     const sunDist = Math.sqrt(dxSun * dxSun + dySun * dySun);

@@ -106,7 +106,7 @@ def main():
         import os
         server_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         subprocess.run(
-            [sys.executable, "-m", "uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"],
+            [sys.executable, "-m", "uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000", "--reload"],
             cwd=server_dir,
         )
     except KeyboardInterrupt:

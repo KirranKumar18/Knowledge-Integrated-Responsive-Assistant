@@ -67,7 +67,7 @@ if os.name == "nt":
         print(f"Could not load custom nvidia DLL paths: {e}")
 
 from faster_whisper import WhisperModel
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -133,6 +133,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mount static files for Vite React assets
+static_dir = Path(__file__).parent / "static"
+assets_dir = static_dir / "assets"
+assets_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
 
 # ---------------------------------------------------------------------------
 # Load Whisper model at startup (one-time, cached in memory)
@@ -1146,6 +1152,56 @@ async def delete_task(session_id: str, keyword: str):
     """Manually mark a task as done by keyword."""
     result = mark_done(session_id, keyword)
     return {"session_id": session_id, "result": result}
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: Live Planet Data endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/productivity")
+async def get_productivity_stats():
+    """Returns the current distraction details from the active productivity monitor."""
+    return {
+        "current_distraction_time": monitor.current_distraction_time,
+        "distraction_threshold": 300,
+        "status": "distracted" if monitor.current_distraction_time > 0 else "productive"
+    }
+
+
+@app.get("/calendar")
+async def get_today_calendar_events():
+    """Returns today's Google Calendar events for the passive Saturn ring particle count."""
+    from handlers.calendar_handler import get_calendar_service
+    service = get_calendar_service()
+    if not service:
+        return {"events": []}
+    try:
+        import datetime as dt_cls
+        now = dt_cls.datetime.now().astimezone()
+        local_tz = now.tzinfo
+        time_min = dt_cls.datetime.combine(now.date(), dt_cls.time.min).replace(tzinfo=local_tz).isoformat()
+        time_max = dt_cls.datetime.combine(now.date(), dt_cls.time.max).replace(tzinfo=local_tz).isoformat()
+        
+        events_result = service.events().list(
+            calendarId='primary',
+            timeMin=time_min,
+            timeMax=time_max,
+            singleEvents=True,
+            orderBy='startTime'
+        ).execute()
+        raw_events = events_result.get('items', [])
+        
+        events = []
+        for e in raw_events:
+            start = e['start'].get('dateTime', e['start'].get('date'))
+            events.append({
+                "summary": e.get("summary", "Untitled Event"),
+                "start": start
+            })
+        return {"events": events}
+    except Exception as e:
+        log.error(f"Error serving /calendar endpoint: {e}")
+        return {"events": []}
 
 
 @app.get("/")
